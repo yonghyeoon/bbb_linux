@@ -32,22 +32,10 @@ static void netdev_print_device(struct netdev_dev_get_rsp *d, unsigned int op)
 	if (!d->_present.xdp_features)
 		return;
 
-	printf("xdp-features (%llx):", d->xdp_features);
-	for (int i = 0; d->xdp_features >= 1U << i; i++) {
+	printf("%llx:", d->xdp_features);
+	for (int i = 0; d->xdp_features > 1U << i; i++) {
 		if (d->xdp_features & (1U << i))
 			printf(" %s", netdev_xdp_act_str(1 << i));
-	}
-
-	printf(" xdp-rx-metadata-features (%llx):", d->xdp_rx_metadata_features);
-	for (int i = 0; d->xdp_rx_metadata_features >= 1U << i; i++) {
-		if (d->xdp_rx_metadata_features & (1U << i))
-			printf(" %s", netdev_xdp_rx_metadata_str(1 << i));
-	}
-
-	printf(" xsk-features (%llx):", d->xsk_features);
-	for (int i = 0; d->xsk_features >= 1U << i; i++) {
-		if (d->xsk_features & (1U << i))
-			printf(" %s", netdev_xsk_flags_str(1 << i));
 	}
 
 	printf(" xdp-zc-max-segs=%u", d->xdp_zc_max_segs);
@@ -79,10 +67,7 @@ int main(int argc, char **argv)
 		goto err_close;
 
 	printf("Select ifc ($ifindex; or 0 = dump; or -2 ntf check): ");
-	if (scanf("%d", &ifindex) != 1) {
-		fprintf(stderr, "Error: unable to parse input\n");
-		goto err_destroy;
-	}
+	scanf("%d", &ifindex);
 
 	if (ifindex > 0) {
 		struct netdev_dev_get_req *req;
@@ -103,8 +88,6 @@ int main(int argc, char **argv)
 		if (!devs)
 			goto err_close;
 
-		if (ynl_dump_empty(devs))
-			fprintf(stderr, "Error: no devices reported\n");
 		ynl_dump_foreach(devs, d)
 			netdev_print_device(d, 0);
 		netdev_dev_get_list_free(devs);
@@ -122,7 +105,6 @@ int main(int argc, char **argv)
 
 err_close:
 	fprintf(stderr, "YNL: %s\n", ys->err.msg);
-err_destroy:
 	ynl_sock_destroy(ys);
 	return 2;
 }

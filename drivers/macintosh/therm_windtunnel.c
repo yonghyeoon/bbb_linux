@@ -481,9 +481,11 @@ static int therm_of_probe(struct platform_device *dev)
 	return -ENODEV;
 }
 
-static void therm_of_remove(struct platform_device *dev)
+static int
+therm_of_remove( struct platform_device *dev )
 {
 	i2c_del_driver( &g4fan_driver );
+	return 0;
 }
 
 static const struct of_device_id therm_of_match[] = {{
@@ -499,7 +501,7 @@ static struct platform_driver therm_of_driver = {
 		.of_match_table = therm_of_match,
 	},
 	.probe		= therm_of_probe,
-	.remove_new	= therm_of_remove,
+	.remove		= therm_of_remove,
 };
 
 struct apple_thermal_info {
@@ -549,7 +551,7 @@ g4fan_exit( void )
 	platform_driver_unregister( &therm_of_driver );
 
 	if( x.of_dev )
-		of_platform_device_destroy(&x.of_dev->dev, NULL);
+		of_device_unregister( x.of_dev );
 }
 
 module_init(g4fan_init);

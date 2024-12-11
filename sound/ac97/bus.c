@@ -15,7 +15,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
-#include <sound/ac97_codec.h>
 #include <sound/ac97/codec.h>
 #include <sound/ac97/controller.h>
 #include <sound/ac97/regs.h>
@@ -28,6 +27,8 @@
 static DEFINE_MUTEX(ac97_controllers_mutex);
 static DEFINE_IDR(ac97_adapter_idr);
 static LIST_HEAD(ac97_controllers);
+
+static struct bus_type ac97_bus_type;
 
 static inline struct ac97_controller*
 to_ac97_controller(struct device *ac97_adapter)
@@ -469,10 +470,10 @@ static struct attribute *ac97_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ac97_dev);
 
-static int ac97_bus_match(struct device *dev, const struct device_driver *drv)
+static int ac97_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct ac97_codec_device *adev = to_ac97_device(dev);
-	const struct ac97_codec_driver *adrv = to_ac97_driver(drv);
+	struct ac97_codec_driver *adrv = to_ac97_driver(drv);
 	const struct ac97_id *id = adrv->id_table;
 	int i = 0;
 
@@ -530,7 +531,7 @@ static void ac97_bus_remove(struct device *dev)
 	pm_runtime_disable(dev);
 }
 
-const struct bus_type ac97_bus_type = {
+static struct bus_type ac97_bus_type = {
 	.name		= "ac97bus",
 	.dev_groups	= ac97_dev_groups,
 	.match		= ac97_bus_match,
@@ -551,6 +552,5 @@ static void __exit ac97_bus_exit(void)
 }
 module_exit(ac97_bus_exit);
 
-MODULE_DESCRIPTION("AC97 bus interface");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Robert Jarzmik <robert.jarzmik@free.fr>");

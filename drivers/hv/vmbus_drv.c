@@ -131,7 +131,7 @@ static ssize_t id_show(struct device *dev, struct device_attribute *dev_attr,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", hv_dev->channel->offermsg.child_relid);
+	return sprintf(buf, "%d\n", hv_dev->channel->offermsg.child_relid);
 }
 static DEVICE_ATTR_RO(id);
 
@@ -142,7 +142,7 @@ static ssize_t state_show(struct device *dev, struct device_attribute *dev_attr,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", hv_dev->channel->state);
+	return sprintf(buf, "%d\n", hv_dev->channel->state);
 }
 static DEVICE_ATTR_RO(state);
 
@@ -153,7 +153,7 @@ static ssize_t monitor_id_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", hv_dev->channel->offermsg.monitorid);
+	return sprintf(buf, "%d\n", hv_dev->channel->offermsg.monitorid);
 }
 static DEVICE_ATTR_RO(monitor_id);
 
@@ -164,8 +164,8 @@ static ssize_t class_id_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "{%pUl}\n",
-			  &hv_dev->channel->offermsg.offer.if_type);
+	return sprintf(buf, "{%pUl}\n",
+		       &hv_dev->channel->offermsg.offer.if_type);
 }
 static DEVICE_ATTR_RO(class_id);
 
@@ -176,8 +176,8 @@ static ssize_t device_id_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "{%pUl}\n",
-			  &hv_dev->channel->offermsg.offer.if_instance);
+	return sprintf(buf, "{%pUl}\n",
+		       &hv_dev->channel->offermsg.offer.if_instance);
 }
 static DEVICE_ATTR_RO(device_id);
 
@@ -186,7 +186,7 @@ static ssize_t modalias_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 
-	return sysfs_emit(buf, "vmbus:%*phN\n", UUID_SIZE, &hv_dev->dev_type);
+	return sprintf(buf, "vmbus:%*phN\n", UUID_SIZE, &hv_dev->dev_type);
 }
 static DEVICE_ATTR_RO(modalias);
 
@@ -199,7 +199,7 @@ static ssize_t numa_node_show(struct device *dev,
 	if (!hv_dev->channel)
 		return -ENODEV;
 
-	return sysfs_emit(buf, "%d\n", cpu_to_node(hv_dev->channel->target_cpu));
+	return sprintf(buf, "%d\n", cpu_to_node(hv_dev->channel->target_cpu));
 }
 static DEVICE_ATTR_RO(numa_node);
 #endif
@@ -212,8 +212,9 @@ static ssize_t server_monitor_pending_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_pending(hv_dev->channel,
-			  vmbus_connection.monitor_pages[0]));
+	return sprintf(buf, "%d\n",
+		       channel_pending(hv_dev->channel,
+				       vmbus_connection.monitor_pages[0]));
 }
 static DEVICE_ATTR_RO(server_monitor_pending);
 
@@ -225,8 +226,9 @@ static ssize_t client_monitor_pending_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_pending(hv_dev->channel,
-			  vmbus_connection.monitor_pages[1]));
+	return sprintf(buf, "%d\n",
+		       channel_pending(hv_dev->channel,
+				       vmbus_connection.monitor_pages[1]));
 }
 static DEVICE_ATTR_RO(client_monitor_pending);
 
@@ -238,8 +240,9 @@ static ssize_t server_monitor_latency_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_latency(hv_dev->channel,
-			  vmbus_connection.monitor_pages[0]));
+	return sprintf(buf, "%d\n",
+		       channel_latency(hv_dev->channel,
+				       vmbus_connection.monitor_pages[0]));
 }
 static DEVICE_ATTR_RO(server_monitor_latency);
 
@@ -251,8 +254,9 @@ static ssize_t client_monitor_latency_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_latency(hv_dev->channel,
-			  vmbus_connection.monitor_pages[1]));
+	return sprintf(buf, "%d\n",
+		       channel_latency(hv_dev->channel,
+				       vmbus_connection.monitor_pages[1]));
 }
 static DEVICE_ATTR_RO(client_monitor_latency);
 
@@ -264,8 +268,9 @@ static ssize_t server_monitor_conn_id_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_conn_id(hv_dev->channel,
-			  vmbus_connection.monitor_pages[0]));
+	return sprintf(buf, "%d\n",
+		       channel_conn_id(hv_dev->channel,
+				       vmbus_connection.monitor_pages[0]));
 }
 static DEVICE_ATTR_RO(server_monitor_conn_id);
 
@@ -277,8 +282,9 @@ static ssize_t client_monitor_conn_id_show(struct device *dev,
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-	return sysfs_emit(buf, "%d\n", channel_conn_id(hv_dev->channel,
-			  vmbus_connection.monitor_pages[1]));
+	return sprintf(buf, "%d\n",
+		       channel_conn_id(hv_dev->channel,
+				       vmbus_connection.monitor_pages[1]));
 }
 static DEVICE_ATTR_RO(client_monitor_conn_id);
 
@@ -297,7 +303,7 @@ static ssize_t out_intr_mask_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", outbound.current_interrupt_mask);
+	return sprintf(buf, "%d\n", outbound.current_interrupt_mask);
 }
 static DEVICE_ATTR_RO(out_intr_mask);
 
@@ -315,7 +321,7 @@ static ssize_t out_read_index_show(struct device *dev,
 					  &outbound);
 	if (ret < 0)
 		return ret;
-	return sysfs_emit(buf, "%d\n", outbound.current_read_index);
+	return sprintf(buf, "%d\n", outbound.current_read_index);
 }
 static DEVICE_ATTR_RO(out_read_index);
 
@@ -334,7 +340,7 @@ static ssize_t out_write_index_show(struct device *dev,
 					  &outbound);
 	if (ret < 0)
 		return ret;
-	return sysfs_emit(buf, "%d\n", outbound.current_write_index);
+	return sprintf(buf, "%d\n", outbound.current_write_index);
 }
 static DEVICE_ATTR_RO(out_write_index);
 
@@ -353,7 +359,7 @@ static ssize_t out_read_bytes_avail_show(struct device *dev,
 					  &outbound);
 	if (ret < 0)
 		return ret;
-	return sysfs_emit(buf, "%d\n", outbound.bytes_avail_toread);
+	return sprintf(buf, "%d\n", outbound.bytes_avail_toread);
 }
 static DEVICE_ATTR_RO(out_read_bytes_avail);
 
@@ -372,7 +378,7 @@ static ssize_t out_write_bytes_avail_show(struct device *dev,
 					  &outbound);
 	if (ret < 0)
 		return ret;
-	return sysfs_emit(buf, "%d\n", outbound.bytes_avail_towrite);
+	return sprintf(buf, "%d\n", outbound.bytes_avail_towrite);
 }
 static DEVICE_ATTR_RO(out_write_bytes_avail);
 
@@ -390,7 +396,7 @@ static ssize_t in_intr_mask_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", inbound.current_interrupt_mask);
+	return sprintf(buf, "%d\n", inbound.current_interrupt_mask);
 }
 static DEVICE_ATTR_RO(in_intr_mask);
 
@@ -408,7 +414,7 @@ static ssize_t in_read_index_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", inbound.current_read_index);
+	return sprintf(buf, "%d\n", inbound.current_read_index);
 }
 static DEVICE_ATTR_RO(in_read_index);
 
@@ -426,7 +432,7 @@ static ssize_t in_write_index_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", inbound.current_write_index);
+	return sprintf(buf, "%d\n", inbound.current_write_index);
 }
 static DEVICE_ATTR_RO(in_write_index);
 
@@ -445,7 +451,7 @@ static ssize_t in_read_bytes_avail_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", inbound.bytes_avail_toread);
+	return sprintf(buf, "%d\n", inbound.bytes_avail_toread);
 }
 static DEVICE_ATTR_RO(in_read_bytes_avail);
 
@@ -464,7 +470,7 @@ static ssize_t in_write_bytes_avail_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", inbound.bytes_avail_towrite);
+	return sprintf(buf, "%d\n", inbound.bytes_avail_towrite);
 }
 static DEVICE_ATTR_RO(in_write_bytes_avail);
 
@@ -474,7 +480,7 @@ static ssize_t channel_vp_mapping_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct vmbus_channel *channel = hv_dev->channel, *cur_sc;
-	int n_written;
+	int buf_size = PAGE_SIZE, n_written, tot_written;
 	struct list_head *cur;
 
 	if (!channel)
@@ -482,21 +488,25 @@ static ssize_t channel_vp_mapping_show(struct device *dev,
 
 	mutex_lock(&vmbus_connection.channel_mutex);
 
-	n_written = sysfs_emit(buf, "%u:%u\n",
-			       channel->offermsg.child_relid,
-			       channel->target_cpu);
+	tot_written = snprintf(buf, buf_size, "%u:%u\n",
+		channel->offermsg.child_relid, channel->target_cpu);
 
 	list_for_each(cur, &channel->sc_list) {
+		if (tot_written >= buf_size - 1)
+			break;
 
 		cur_sc = list_entry(cur, struct vmbus_channel, sc_list);
-		n_written += sysfs_emit_at(buf, n_written, "%u:%u\n",
-					  cur_sc->offermsg.child_relid,
-					  cur_sc->target_cpu);
+		n_written = scnprintf(buf + tot_written,
+				     buf_size - tot_written,
+				     "%u:%u\n",
+				     cur_sc->offermsg.child_relid,
+				     cur_sc->target_cpu);
+		tot_written += n_written;
 	}
 
 	mutex_unlock(&vmbus_connection.channel_mutex);
 
-	return n_written;
+	return tot_written;
 }
 static DEVICE_ATTR_RO(channel_vp_mapping);
 
@@ -506,7 +516,7 @@ static ssize_t vendor_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 
-	return sysfs_emit(buf, "0x%x\n", hv_dev->vendor_id);
+	return sprintf(buf, "0x%x\n", hv_dev->vendor_id);
 }
 static DEVICE_ATTR_RO(vendor);
 
@@ -516,7 +526,7 @@ static ssize_t device_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 
-	return sysfs_emit(buf, "0x%x\n", hv_dev->device_id);
+	return sprintf(buf, "0x%x\n", hv_dev->device_id);
 }
 static DEVICE_ATTR_RO(device);
 
@@ -541,7 +551,7 @@ static ssize_t driver_override_show(struct device *dev,
 	ssize_t len;
 
 	device_lock(dev);
-	len = sysfs_emit(buf, "%s\n", hv_dev->driver_override);
+	len = snprintf(buf, PAGE_SIZE, "%s\n", hv_dev->driver_override);
 	device_unlock(dev);
 
 	return len;
@@ -685,7 +695,7 @@ static const struct hv_vmbus_device_id vmbus_device_null;
  * Return a matching hv_vmbus_device_id pointer.
  * If there is no match, return NULL.
  */
-static const struct hv_vmbus_device_id *hv_vmbus_get_id(const struct hv_driver *drv,
+static const struct hv_vmbus_device_id *hv_vmbus_get_id(struct hv_driver *drv,
 							struct hv_device *dev)
 {
 	const guid_t *guid = &dev->dev_type;
@@ -696,7 +706,7 @@ static const struct hv_vmbus_device_id *hv_vmbus_get_id(const struct hv_driver *
 		return NULL;
 
 	/* Look at the dynamic ids first, before the static ones */
-	id = hv_vmbus_dynid_match((struct hv_driver *)drv, guid);
+	id = hv_vmbus_dynid_match(drv, guid);
 	if (!id)
 		id = hv_vmbus_dev_match(drv->id_table, guid);
 
@@ -809,9 +819,9 @@ ATTRIBUTE_GROUPS(vmbus_drv);
 /*
  * vmbus_match - Attempt to match the specified device to the specified driver
  */
-static int vmbus_match(struct device *device, const struct device_driver *driver)
+static int vmbus_match(struct device *device, struct device_driver *driver)
 {
-	const struct hv_driver *drv = drv_to_hv_drv(driver);
+	struct hv_driver *drv = drv_to_hv_drv(driver);
 	struct hv_device *hv_dev = device_to_hv_device(device);
 
 	/* The hv_sock driver handles all hv_sock offers. */
@@ -978,7 +988,7 @@ static const struct dev_pm_ops vmbus_pm = {
 };
 
 /* The one and only one */
-static const struct bus_type  hv_bus = {
+static struct bus_type  hv_bus = {
 	.name =		"vmbus",
 	.match =		vmbus_match,
 	.shutdown =		vmbus_shutdown,
@@ -1306,13 +1316,6 @@ static irqreturn_t vmbus_percpu_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void vmbus_percpu_work(struct work_struct *work)
-{
-	unsigned int cpu = smp_processor_id();
-
-	hv_synic_init(cpu);
-}
-
 /*
  * vmbus_bus_init -Main vmbus driver initialization routine.
  *
@@ -1323,8 +1326,7 @@ static void vmbus_percpu_work(struct work_struct *work)
  */
 static int vmbus_bus_init(void)
 {
-	int ret, cpu;
-	struct work_struct __percpu *works;
+	int ret;
 
 	ret = hv_init();
 	if (ret != 0) {
@@ -1363,32 +1365,12 @@ static int vmbus_bus_init(void)
 	if (ret)
 		goto err_alloc;
 
-	works = alloc_percpu(struct work_struct);
-	if (!works) {
-		ret = -ENOMEM;
-		goto err_alloc;
-	}
-
 	/*
 	 * Initialize the per-cpu interrupt state and stimer state.
 	 * Then connect to the host.
 	 */
-	cpus_read_lock();
-	for_each_online_cpu(cpu) {
-		struct work_struct *work = per_cpu_ptr(works, cpu);
-
-		INIT_WORK(work, vmbus_percpu_work);
-		schedule_work_on(cpu, work);
-	}
-
-	for_each_online_cpu(cpu)
-		flush_work(per_cpu_ptr(works, cpu));
-
-	/* Register the callbacks for possible CPU online/offline'ing */
-	ret = cpuhp_setup_state_nocalls_cpuslocked(CPUHP_AP_ONLINE_DYN, "hyperv/vmbus:online",
-						   hv_synic_init, hv_synic_cleanup);
-	cpus_read_unlock();
-	free_percpu(works);
+	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "hyperv/vmbus:online",
+				hv_synic_init, hv_synic_cleanup);
 	if (ret < 0)
 		goto err_alloc;
 	hyperv_cpuhp_online = ret;
@@ -1831,12 +1813,12 @@ static umode_t vmbus_chan_attr_is_visible(struct kobject *kobj,
 	return attr->mode;
 }
 
-static const struct attribute_group vmbus_chan_group = {
+static struct attribute_group vmbus_chan_group = {
 	.attrs = vmbus_chan_attrs,
 	.is_visible = vmbus_chan_attr_is_visible
 };
 
-static const struct kobj_type vmbus_chan_ktype = {
+static struct kobj_type vmbus_chan_ktype = {
 	.sysfs_ops = &vmbus_chan_sysfs_ops,
 	.release = vmbus_chan_release,
 };
@@ -1980,7 +1962,6 @@ void vmbus_device_unregister(struct hv_device *device_obj)
 	 */
 	device_unregister(&device_obj->device);
 }
-EXPORT_SYMBOL_GPL(vmbus_device_unregister);
 
 #ifdef CONFIG_ACPI
 /*
@@ -2119,10 +2100,8 @@ static void __maybe_unused vmbus_reserve_fb(void)
 
 	if (efi_enabled(EFI_BOOT)) {
 		/* Gen2 VM: get FB base from EFI framebuffer */
-		if (IS_ENABLED(CONFIG_SYSFB)) {
-			start = screen_info.lfb_base;
-			size = max_t(__u32, screen_info.lfb_size, 0x800000);
-		}
+		start = screen_info.lfb_base;
+		size = max_t(__u32, screen_info.lfb_size, 0x800000);
 	} else {
 		/* Gen1 VM: get FB base from PCI */
 		pdev = pci_get_device(PCI_VENDOR_ID_MICROSOFT,
@@ -2378,9 +2357,10 @@ static int vmbus_platform_driver_probe(struct platform_device *pdev)
 		return vmbus_acpi_add(pdev);
 }
 
-static void vmbus_platform_driver_remove(struct platform_device *pdev)
+static int vmbus_platform_driver_remove(struct platform_device *pdev)
 {
 	vmbus_mmio_remove();
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -2560,7 +2540,7 @@ static const struct dev_pm_ops vmbus_bus_pm = {
 
 static struct platform_driver vmbus_platform_driver = {
 	.probe = vmbus_platform_driver_probe,
-	.remove_new = vmbus_platform_driver_remove,
+	.remove = vmbus_platform_driver_remove,
 	.driver = {
 		.name = "vmbus",
 		.acpi_match_table = ACPI_PTR(vmbus_acpi_device_ids),

@@ -37,7 +37,7 @@
 
 #include <video/metronomefb.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /* Display specific information */
 #define DPY_W 832
@@ -707,7 +707,7 @@ static void metronomefb_remove(struct platform_device *dev)
 
 static struct platform_driver metronomefb_driver = {
 	.probe	= metronomefb_probe,
-	.remove	= metronomefb_remove,
+	.remove_new = metronomefb_remove,
 	.driver	= {
 		.name	= "metronomefb",
 	},

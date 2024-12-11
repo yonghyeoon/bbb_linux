@@ -293,96 +293,6 @@ static int write_head(struct ubifs_info *c, int jhead, void *buf, int len,
 }
 
 /**
- * __queue_and_wait - queue a task and wait until the task is waked up.
- * @c: UBIFS file-system description object
- *
- * This function adds current task in queue and waits until the task is waked
- * up. This function should be called with @c->reserve_space_wq locked.
- */
-static void __queue_and_wait(struct ubifs_info *c)
-{
-	DEFINE_WAIT(wait);
-
-	__add_wait_queue_entry_tail_exclusive(&c->reserve_space_wq, &wait);
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	spin_unlock(&c->reserve_space_wq.lock);
-
-	schedule();
-	finish_wait(&c->reserve_space_wq, &wait);
-}
-
-/**
- * wait_for_reservation - try queuing current task to wait until waked up.
- * @c: UBIFS file-system description object
- *
- * This function queues current task to wait until waked up, if queuing is
- * started(@c->need_wait_space is not %0). Returns %true if current task is
- * added in queue, otherwise %false is returned.
- */
-static bool wait_for_reservation(struct ubifs_info *c)
-{
-	if (likely(atomic_read(&c->need_wait_space) == 0))
-		/* Quick path to check whether queuing is started. */
-		return false;
-
-	spin_lock(&c->reserve_space_wq.lock);
-	if (atomic_read(&c->need_wait_space) == 0) {
-		/* Queuing is not started, don't queue current task. */
-		spin_unlock(&c->reserve_space_wq.lock);
-		return false;
-	}
-
-	__queue_and_wait(c);
-	return true;
-}
-
-/**
- * wake_up_reservation - wake up first task in queue or stop queuing.
- * @c: UBIFS file-system description object
- *
- * This function wakes up the first task in queue if it exists, or stops
- * queuing if no tasks in queue.
- */
-static void wake_up_reservation(struct ubifs_info *c)
-{
-	spin_lock(&c->reserve_space_wq.lock);
-	if (waitqueue_active(&c->reserve_space_wq))
-		wake_up_locked(&c->reserve_space_wq);
-	else
-		/*
-		 * Compared with wait_for_reservation(), set @c->need_wait_space
-		 * under the protection of wait queue lock, which can avoid that
-		 * @c->need_wait_space is set to 0 after new task queued.
-		 */
-		atomic_set(&c->need_wait_space, 0);
-	spin_unlock(&c->reserve_space_wq.lock);
-}
-
-/**
- * add_or_start_queue - add current task in queue or start queuing.
- * @c: UBIFS file-system description object
- *
- * This function starts queuing if queuing is not started, otherwise adds
- * current task in queue.
- */
-static void add_or_start_queue(struct ubifs_info *c)
-{
-	spin_lock(&c->reserve_space_wq.lock);
-	if (atomic_cmpxchg(&c->need_wait_space, 0, 1) == 0) {
-		/* Starts queuing, task can go on directly. */
-		spin_unlock(&c->reserve_space_wq.lock);
-		return;
-	}
-
-	/*
-	 * There are at least two tasks have retried more than 32 times
-	 * at certain point, first task has started queuing, just queue
-	 * the left tasks.
-	 */
-	__queue_and_wait(c);
-}
-
-/**
  * make_reservation - reserve journal space.
  * @c: UBIFS file-system description object
  * @jhead: journal head
@@ -401,27 +311,33 @@ static void add_or_start_queue(struct ubifs_info *c)
 static int make_reservation(struct ubifs_info *c, int jhead, int len)
 {
 	int err, cmt_retries = 0, nospc_retries = 0;
-	bool blocked = wait_for_reservation(c);
 
 again:
 	down_read(&c->commit_sem);
 	err = reserve_space(c, jhead, len);
-	if (!err) {
+	if (!err)
 		/* c->commit_sem will get released via finish_reservation(). */
-		goto out_wake_up;
-	}
+		return 0;
 	up_read(&c->commit_sem);
 
 	if (err == -ENOSPC) {
 		/*
 		 * GC could not make any progress. We should try to commit
-		 * because it could make some dirty space and GC would make
-		 * progress, so make the error -EAGAIN so that the below
+		 * once because it could make some dirty space and GC would
+		 * make progress, so make the error -EAGAIN so that the below
 		 * will commit and re-try.
 		 */
-		nospc_retries++;
-		dbg_jnl("no space, retry");
-		err = -EAGAIN;
+		if (nospc_retries++ < 2) {
+			dbg_jnl("no space, retry");
+			err = -EAGAIN;
+		}
+
+		/*
+		 * This means that the budgeting is incorrect. We always have
+		 * to be able to write to the media, because all operations are
+		 * budgeted. Deletions are not budgeted, though, but we reserve
+		 * an extra LEB for them.
+		 */
 	}
 
 	if (err != -EAGAIN)
@@ -433,37 +349,15 @@ again:
 	 */
 	if (cmt_retries > 128) {
 		/*
-		 * This should not happen unless:
-		 * 1. The journal size limitations are too tough.
-		 * 2. The budgeting is incorrect. We always have to be able to
-		 *    write to the media, because all operations are budgeted.
-		 *    Deletions are not budgeted, though, but we reserve an
-		 *    extra LEB for them.
+		 * This should not happen unless the journal size limitations
+		 * are too tough.
 		 */
-		ubifs_err(c, "stuck in space allocation, nospc_retries %d",
-			  nospc_retries);
+		ubifs_err(c, "stuck in space allocation");
 		err = -ENOSPC;
 		goto out;
-	} else if (cmt_retries > 32) {
-		/*
-		 * It's almost impossible to happen, unless there are many tasks
-		 * making reservation concurrently and someone task has retried
-		 * gc + commit for many times, generated available space during
-		 * this period are grabbed by other tasks.
-		 * But if it happens, start queuing up all tasks that will make
-		 * space reservation, then there is only one task making space
-		 * reservation at any time, and it can always make success under
-		 * the premise of correct budgeting.
-		 */
-		ubifs_warn(c, "too many space allocation cmt_retries (%d) "
-			   "nospc_retries (%d), start queuing tasks",
-			   cmt_retries, nospc_retries);
-
-		if (!blocked) {
-			blocked = true;
-			add_or_start_queue(c);
-		}
-	}
+	} else if (cmt_retries > 32)
+		ubifs_warn(c, "too many space allocation re-tries (%d)",
+			   cmt_retries);
 
 	dbg_jnl("-EAGAIN, commit and retry (retried %d times)",
 		cmt_retries);
@@ -471,7 +365,7 @@ again:
 
 	err = ubifs_run_commit(c);
 	if (err)
-		goto out_wake_up;
+		return err;
 	goto again;
 
 out:
@@ -485,27 +379,6 @@ out:
 		ubifs_dump_lprops(c);
 		cmt_retries = dbg_check_lprops(c);
 		up_write(&c->commit_sem);
-	}
-out_wake_up:
-	if (blocked) {
-		/*
-		 * Only tasks that have ever started queuing or ever been queued
-		 * can wake up other queued tasks, which can make sure that
-		 * there is only one task waked up to make space reservation.
-		 * For example:
-		 *      task A          task B           task C
-		 *                 make_reservation  make_reservation
-		 * reserve_space // 0
-		 * wake_up_reservation
-		 *                  atomic_cmpxchg // 0, start queuing
-		 *                  reserve_space
-		 *                                    wait_for_reservation
-		 *                                     __queue_and_wait
-		 *                                      add_wait_queue
-		 *  if (blocked) // false
-		 *  // So that task C won't be waked up to race with task B
-		 */
-		wake_up_reservation(c);
 	}
 	return err;
 }
@@ -579,12 +452,12 @@ static void pack_inode(struct ubifs_info *c, struct ubifs_ino_node *ino,
 	ino->ch.node_type = UBIFS_INO_NODE;
 	ino_key_init_flash(c, &ino->key, inode->i_ino);
 	ino->creat_sqnum = cpu_to_le64(ui->creat_sqnum);
-	ino->atime_sec  = cpu_to_le64(inode_get_atime_sec(inode));
-	ino->atime_nsec = cpu_to_le32(inode_get_atime_nsec(inode));
-	ino->ctime_sec  = cpu_to_le64(inode_get_ctime_sec(inode));
-	ino->ctime_nsec = cpu_to_le32(inode_get_ctime_nsec(inode));
-	ino->mtime_sec  = cpu_to_le64(inode_get_mtime_sec(inode));
-	ino->mtime_nsec = cpu_to_le32(inode_get_mtime_nsec(inode));
+	ino->atime_sec  = cpu_to_le64(inode->i_atime.tv_sec);
+	ino->atime_nsec = cpu_to_le32(inode->i_atime.tv_nsec);
+	ino->ctime_sec  = cpu_to_le64(inode_get_ctime(inode).tv_sec);
+	ino->ctime_nsec = cpu_to_le32(inode_get_ctime(inode).tv_nsec);
+	ino->mtime_sec  = cpu_to_le64(inode->i_mtime.tv_sec);
+	ino->mtime_nsec = cpu_to_le32(inode->i_mtime.tv_nsec);
 	ino->uid   = cpu_to_le32(i_uid_read(inode));
 	ino->gid   = cpu_to_le32(i_gid_read(inode));
 	ino->mode  = cpu_to_le32(inode->i_mode);
@@ -643,7 +516,6 @@ static void set_dent_cookie(struct ubifs_info *c, struct ubifs_dent_node *dent)
  * @inode: inode to update
  * @deletion: indicates a directory entry deletion i.e unlink or rmdir
  * @xent: non-zero if the directory entry is an extended attribute entry
- * @in_orphan: indicates whether the @inode is in orphan list
  *
  * This function updates an inode by writing a directory entry (or extended
  * attribute entry), the inode itself, and the parent directory inode (or the
@@ -665,7 +537,7 @@ static void set_dent_cookie(struct ubifs_info *c, struct ubifs_dent_node *dent)
  */
 int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 		     const struct fscrypt_name *nm, const struct inode *inode,
-		     int deletion, int xent, int in_orphan)
+		     int deletion, int xent)
 {
 	int err, dlen, ilen, len, lnum, ino_offs, dent_offs, orphan_added = 0;
 	int aligned_dlen, aligned_ilen, sync = IS_DIRSYNC(dir);
@@ -751,7 +623,7 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	if (err)
 		goto out_release;
 
-	if (last_reference && !in_orphan) {
+	if (last_reference) {
 		err = ubifs_add_orphan(c, inode->i_ino);
 		if (err) {
 			release_head(c, BASEHD);
@@ -806,9 +678,6 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 			    UBIFS_INO_NODE_SZ + host_ui->data_len, hash_ino_host);
 	if (err)
 		goto out_ro;
-
-	if (in_orphan && inode->i_nlink)
-		ubifs_delete_orphan(c, inode->i_ino);
 
 	finish_reservation(c);
 	spin_lock(&ui->ui_lock);
@@ -1340,7 +1209,6 @@ out_free:
  * @new_nm: new name of the new directory entry
  * @whiteout: whiteout inode
  * @sync: non-zero if the write-buffer has to be synchronized
- * @delete_orphan: indicates an orphan entry deletion for @whiteout
  *
  * This function implements the re-name operation which may involve writing up
  * to 4 inodes(new inode, whiteout inode, old and new parent directory inodes)
@@ -1353,7 +1221,7 @@ int ubifs_jnl_rename(struct ubifs_info *c, const struct inode *old_dir,
 		     const struct inode *new_dir,
 		     const struct inode *new_inode,
 		     const struct fscrypt_name *new_nm,
-		     const struct inode *whiteout, int sync, int delete_orphan)
+		     const struct inode *whiteout, int sync)
 {
 	void *p;
 	union ubifs_key key;
@@ -1570,9 +1438,6 @@ int ubifs_jnl_rename(struct ubifs_info *c, const struct inode *old_dir,
 			goto out_ro;
 	}
 
-	if (delete_orphan)
-		ubifs_delete_orphan(c, whiteout->i_ino);
-
 	finish_reservation(c);
 	if (new_inode) {
 		mark_inode_clean(c, new_ui);
@@ -1742,7 +1607,6 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 				ubifs_err(c, "bad data node (block %u, inode %lu)",
 					  blk, inode->i_ino);
 				ubifs_dump_node(c, dn, dn_size);
-				err = -EUCLEAN;
 				goto out_free;
 			}
 

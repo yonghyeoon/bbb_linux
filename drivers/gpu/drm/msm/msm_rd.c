@@ -227,6 +227,7 @@ static const struct file_operations rd_debugfs_fops = {
 	.owner = THIS_MODULE,
 	.open = rd_open,
 	.read = rd_read,
+	.llseek = no_llseek,
 	.release = rd_release,
 };
 
@@ -268,9 +269,6 @@ int msm_rd_debugfs_init(struct drm_minor *minor)
 	struct msm_drm_private *priv = minor->dev->dev_private;
 	struct msm_rd_state *rd;
 	int ret;
-
-	if (!priv->gpu_pdev)
-		return 0;
 
 	/* only create on first minor: */
 	if (priv->rd)

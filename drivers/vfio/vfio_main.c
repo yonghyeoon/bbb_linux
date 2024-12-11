@@ -16,16 +16,14 @@
 #include <linux/fs.h>
 #include <linux/idr.h>
 #include <linux/iommu.h>
-#if IS_ENABLED(CONFIG_KVM)
+#ifdef CONFIG_HAVE_KVM
 #include <linux/kvm_host.h>
 #endif
 #include <linux/list.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
-#include <linux/mount.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
-#include <linux/pseudo_fs.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -45,13 +43,9 @@
 #define DRIVER_AUTHOR	"Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC	"VFIO - User Level meta-driver"
 
-#define VFIO_MAGIC 0x5646494f /* "VFIO" */
-
 static struct vfio {
 	struct class			*device_class;
 	struct ida			device_ida;
-	struct vfsmount			*vfs_mount;
-	int				fs_count;
 } vfio;
 
 #ifdef CONFIG_VFIO_NOIOMMU
@@ -192,8 +186,6 @@ static void vfio_device_release(struct device *dev)
 	if (device->ops->release)
 		device->ops->release(device);
 
-	iput(device->inode);
-	simple_release_fs(&vfio.vfs_mount, &vfio.fs_count);
 	kvfree(device);
 }
 
@@ -236,34 +228,6 @@ out_free:
 }
 EXPORT_SYMBOL_GPL(_vfio_alloc_device);
 
-static int vfio_fs_init_fs_context(struct fs_context *fc)
-{
-	return init_pseudo(fc, VFIO_MAGIC) ? 0 : -ENOMEM;
-}
-
-static struct file_system_type vfio_fs_type = {
-	.name = "vfio",
-	.owner = THIS_MODULE,
-	.init_fs_context = vfio_fs_init_fs_context,
-	.kill_sb = kill_anon_super,
-};
-
-static struct inode *vfio_fs_inode_new(void)
-{
-	struct inode *inode;
-	int ret;
-
-	ret = simple_pin_fs(&vfio_fs_type, &vfio.vfs_mount, &vfio.fs_count);
-	if (ret)
-		return ERR_PTR(ret);
-
-	inode = alloc_anon_inode(vfio.vfs_mount->mnt_sb);
-	if (IS_ERR(inode))
-		simple_release_fs(&vfio.vfs_mount, &vfio.fs_count);
-
-	return inode;
-}
-
 /*
  * Initialize a vfio_device so it can be registered to vfio core.
  */
@@ -282,11 +246,6 @@ static int vfio_init_device(struct vfio_device *device, struct device *dev,
 	init_completion(&device->comp);
 	device->dev = dev;
 	device->ops = ops;
-	device->inode = vfio_fs_inode_new();
-	if (IS_ERR(device->inode)) {
-		ret = PTR_ERR(device->inode);
-		goto out_inode;
-	}
 
 	if (ops->init) {
 		ret = ops->init(device);
@@ -301,9 +260,6 @@ static int vfio_init_device(struct vfio_device *device, struct device *dev,
 	return 0;
 
 out_uninit:
-	iput(device->inode);
-	simple_release_fs(&vfio.vfs_mount, &vfio.fs_count);
-out_inode:
 	vfio_release_device_set(device);
 	ida_free(&vfio.device_ida, device->index);
 	return ret;
@@ -355,7 +311,6 @@ static int __vfio_register_dev(struct vfio_device *device,
 	refcount_set(&device->refcount, 1);
 
 	vfio_device_group_register(device);
-	vfio_device_debugfs_init(device);
 
 	return 0;
 err_out:
@@ -423,13 +378,12 @@ void vfio_unregister_group_dev(struct vfio_device *device)
 		}
 	}
 
-	vfio_device_debugfs_exit(device);
 	/* Balances vfio_device_set_group in register path */
 	vfio_device_remove_group(device);
 }
 EXPORT_SYMBOL_GPL(vfio_unregister_group_dev);
 
-#if IS_ENABLED(CONFIG_KVM)
+#ifdef CONFIG_HAVE_KVM
 void vfio_device_get_kvm_safe(struct vfio_device *device, struct kvm *kvm)
 {
 	void (*pfn)(struct kvm *kvm);
@@ -992,11 +946,6 @@ void vfio_combine_iova_ranges(struct rb_root_cached *root, u32 cur_nodes,
 		unsigned long last;
 
 		comb_start = interval_tree_iter_first(root, 0, ULONG_MAX);
-
-		/* Empty list */
-		if (WARN_ON_ONCE(!comb_start))
-			return;
-
 		curr = comb_start;
 		while (curr) {
 			last = curr->last;
@@ -1026,11 +975,6 @@ void vfio_combine_iova_ranges(struct rb_root_cached *root, u32 cur_nodes,
 			prev = curr;
 			curr = interval_tree_iter_next(curr, 0, ULONG_MAX);
 		}
-
-		/* Empty list or no nodes to combine */
-		if (WARN_ON_ONCE(min_gap == ULONG_MAX))
-			break;
-
 		comb_start->last = comb_end->last;
 		interval_tree_remove(comb_end, root);
 		cur_nodes--;
@@ -1722,7 +1666,6 @@ static int __init vfio_init(void)
 	if (ret)
 		goto err_alloc_dev_chrdev;
 
-	vfio_debugfs_create_root();
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 	return 0;
 
@@ -1738,7 +1681,6 @@ err_virqfd:
 
 static void __exit vfio_cleanup(void)
 {
-	vfio_debugfs_remove_root();
 	ida_destroy(&vfio.device_ida);
 	vfio_cdev_cleanup();
 	class_destroy(vfio.device_class);
@@ -1751,7 +1693,6 @@ static void __exit vfio_cleanup(void)
 module_init(vfio_init);
 module_exit(vfio_cleanup);
 
-MODULE_IMPORT_NS(IOMMUFD);
 MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR(DRIVER_AUTHOR);

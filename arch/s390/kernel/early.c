@@ -7,7 +7,6 @@
 #define KMSG_COMPONENT "setup"
 #define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/sched/debug.h>
 #include <linux/compiler.h>
 #include <linux/init.h>
 #include <linux/errno.h>
@@ -20,10 +19,8 @@
 #include <linux/kernel.h>
 #include <asm/asm-extable.h>
 #include <linux/memblock.h>
-#include <asm/access-regs.h>
 #include <asm/diag.h>
 #include <asm/ebcdic.h>
-#include <asm/fpu.h>
 #include <asm/ipl.h>
 #include <asm/lowcore.h>
 #include <asm/processor.h>
@@ -34,6 +31,7 @@
 #include <asm/sclp.h>
 #include <asm/facility.h>
 #include <asm/boot_data.h>
+#include <asm/switch_to.h>
 #include "entry.h"
 
 #define decompressor_handled_param(param)			\
@@ -48,8 +46,6 @@ decompressor_handled_param(vmalloc);
 decompressor_handled_param(dfltcc);
 decompressor_handled_param(facilities);
 decompressor_handled_param(nokaslr);
-decompressor_handled_param(cmma);
-decompressor_handled_param(relocate_lowcore);
 #if IS_ENABLED(CONFIG_KVM)
 decompressor_handled_param(prot_virt);
 #endif
@@ -74,7 +70,7 @@ static void __init reset_tod_clock(void)
 
 	memset(&tod_clock_base, 0, sizeof(tod_clock_base));
 	tod_clock_base.tod = TOD_UNIX_EPOCH;
-	get_lowcore()->last_update_clock = TOD_UNIX_EPOCH;
+	S390_lowcore.last_update_clock = TOD_UNIX_EPOCH;
 }
 
 /*
@@ -101,7 +97,7 @@ static noinline __init void detect_machine_type(void)
 
 	/* Check current-configuration-level */
 	if (stsi(NULL, 0, 0, 0) <= 2) {
-		get_lowcore()->machine_flags |= MACHINE_FLAG_LPAR;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_LPAR;
 		return;
 	}
 	/* Get virtual-machine cpu information. */
@@ -110,9 +106,9 @@ static noinline __init void detect_machine_type(void)
 
 	/* Detect known hypervisors */
 	if (!memcmp(vmms->vm[0].cpi, "\xd2\xe5\xd4", 3))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_KVM;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_KVM;
 	else if (!memcmp(vmms->vm[0].cpi, "\xa9\x61\xe5\xd4", 4))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_VM;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_VM;
 }
 
 /* Remove leading, trailing and double whitespace. */
@@ -168,7 +164,7 @@ static __init void setup_topology(void)
 
 	if (!test_facility(11))
 		return;
-	get_lowcore()->machine_flags |= MACHINE_FLAG_TOPOLOGY;
+	S390_lowcore.machine_flags |= MACHINE_FLAG_TOPOLOGY;
 	for (max_mnest = 6; max_mnest > 1; max_mnest--) {
 		if (stsi(&sysinfo_page, 15, 1, max_mnest) == 0)
 			break;
@@ -176,45 +172,27 @@ static __init void setup_topology(void)
 	topology_max_mnest = max_mnest;
 }
 
-void __init __do_early_pgm_check(struct pt_regs *regs)
+void __do_early_pgm_check(struct pt_regs *regs)
 {
-	struct lowcore *lc = get_lowcore();
-	unsigned long ip;
-
-	regs->int_code = lc->pgm_int_code;
-	regs->int_parm_long = lc->trans_exc_code;
-	ip = __rewind_psw(regs->psw, regs->int_code >> 16);
-
-	/* Monitor Event? Might be a warning */
-	if ((regs->int_code & PGM_INT_CODE_MASK) == 0x40) {
-		if (report_bug(ip, regs) == BUG_TRAP_TYPE_WARN)
-			return;
-	}
-	if (fixup_exception(regs))
-		return;
-	/*
-	 * Unhandled exception - system cannot continue but try to get some
-	 * helpful messages to the console. Use early_printk() to print
-	 * some basic information in case it is too early for printk().
-	 */
-	register_early_console();
-	early_printk("PANIC: early exception %04x PSW: %016lx %016lx\n",
-		     regs->int_code & 0xffff, regs->psw.mask, regs->psw.addr);
-	show_regs(regs);
-	disabled_wait();
+	if (!fixup_exception(regs))
+		disabled_wait();
 }
 
 static noinline __init void setup_lowcore_early(void)
 {
-	struct lowcore *lc = get_lowcore();
 	psw_t psw;
 
 	psw.addr = (unsigned long)early_pgm_check_handler;
 	psw.mask = PSW_KERNEL_BITS;
-	lc->program_new_psw = psw;
-	lc->preempt_count = INIT_PREEMPT_COUNT;
-	lc->return_lpswe = gen_lpswe(__LC_RETURN_PSW);
-	lc->return_mcck_lpswe = gen_lpswe(__LC_RETURN_MCCK_PSW);
+	S390_lowcore.program_new_psw = psw;
+	S390_lowcore.preempt_count = INIT_PREEMPT_COUNT;
+}
+
+static noinline __init void setup_facility_list(void)
+{
+	memcpy(alt_stfle_fac_list, stfle_fac_list, sizeof(alt_stfle_fac_list));
+	if (!IS_ENABLED(CONFIG_KERNEL_NOBP))
+		__clear_facility(82, alt_stfle_fac_list);
 }
 
 static __init void detect_diag9c(void)
@@ -231,45 +209,45 @@ static __init void detect_diag9c(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc) : "0" (-EOPNOTSUPP), "d" (cpu_address) : "cc");
 	if (!rc)
-		get_lowcore()->machine_flags |= MACHINE_FLAG_DIAG9C;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_DIAG9C;
 }
 
 static __init void detect_machine_facilities(void)
 {
 	if (test_facility(8)) {
-		get_lowcore()->machine_flags |= MACHINE_FLAG_EDAT1;
-		system_ctl_set_bit(0, CR0_EDAT_BIT);
+		S390_lowcore.machine_flags |= MACHINE_FLAG_EDAT1;
+		__ctl_set_bit(0, 23);
 	}
 	if (test_facility(78))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_EDAT2;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_EDAT2;
 	if (test_facility(3))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_IDTE;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_IDTE;
 	if (test_facility(50) && test_facility(73)) {
-		get_lowcore()->machine_flags |= MACHINE_FLAG_TE;
-		system_ctl_set_bit(0, CR0_TRANSACTIONAL_EXECUTION_BIT);
+		S390_lowcore.machine_flags |= MACHINE_FLAG_TE;
+		__ctl_set_bit(0, 55);
 	}
 	if (test_facility(51))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_TLB_LC;
-	if (test_facility(129))
-		system_ctl_set_bit(0, CR0_VECTOR_BIT);
+		S390_lowcore.machine_flags |= MACHINE_FLAG_TLB_LC;
+	if (test_facility(129)) {
+		S390_lowcore.machine_flags |= MACHINE_FLAG_VX;
+		__ctl_set_bit(0, 17);
+	}
 	if (test_facility(130))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_NX;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_NX;
 	if (test_facility(133))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_GS;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_GS;
 	if (test_facility(139) && (tod_clock_base.tod >> 63)) {
 		/* Enabled signed clock comparator comparisons */
-		get_lowcore()->machine_flags |= MACHINE_FLAG_SCC;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_SCC;
 		clock_comparator_max = -1ULL >> 1;
-		system_ctl_set_bit(0, CR0_CLOCK_COMPARATOR_SIGN_BIT);
+		__ctl_set_bit(0, 53);
 	}
 	if (IS_ENABLED(CONFIG_PCI) && test_facility(153)) {
-		get_lowcore()->machine_flags |= MACHINE_FLAG_PCI_MIO;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_PCI_MIO;
 		/* the control bit is set during PCI initialization */
 	}
 	if (test_facility(194))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_RDP;
-	if (test_facility(85))
-		get_lowcore()->machine_flags |= MACHINE_FLAG_SEQ_INSN;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_RDP;
 }
 
 static inline void save_vector_registers(void)
@@ -280,9 +258,15 @@ static inline void save_vector_registers(void)
 #endif
 }
 
-static inline void setup_low_address_protection(void)
+static inline void setup_control_registers(void)
 {
-	system_ctl_set_bit(0, CR0_LOW_ADDRESS_PROTECTION_BIT);
+	unsigned long reg;
+
+	__ctl_store(reg, 0, 0);
+	reg |= CR0_LOW_ADDRESS_PROTECTION;
+	reg |= CR0_EMERGENCY_SIGNAL_SUBMASK;
+	reg |= CR0_EXTERNAL_CALL_SUBMASK;
+	__ctl_load(reg, 0, 0);
 }
 
 static inline void setup_access_registers(void)
@@ -291,6 +275,14 @@ static inline void setup_access_registers(void)
 
 	restore_access_regs(acrs);
 }
+
+static int __init disable_vector_extension(char *str)
+{
+	S390_lowcore.machine_flags &= ~MACHINE_FLAG_VX;
+	__ctl_clear_bit(0, 17);
+	return 0;
+}
+early_param("novx", disable_vector_extension);
 
 char __bootdata(early_command_line)[COMMAND_LINE_SIZE];
 static void __init setup_boot_command_line(void)
@@ -313,6 +305,7 @@ void __init startup_init(void)
 	lockdep_off();
 	sort_amode31_extable();
 	setup_lowcore_early();
+	setup_facility_list();
 	detect_machine_type();
 	setup_arch_string();
 	setup_boot_command_line();
@@ -321,7 +314,7 @@ void __init startup_init(void)
 	save_vector_registers();
 	setup_topology();
 	sclp_early_detect();
-	setup_low_address_protection();
+	setup_control_registers();
 	setup_access_registers();
 	lockdep_on();
 }

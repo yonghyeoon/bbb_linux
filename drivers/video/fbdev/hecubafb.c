@@ -235,7 +235,7 @@ static void hecubafb_remove(struct platform_device *dev)
 
 static struct platform_driver hecubafb_driver = {
 	.probe	= hecubafb_probe,
-	.remove	= hecubafb_remove,
+	.remove_new = hecubafb_remove,
 	.driver	= {
 		.name	= "hecubafb",
 	},

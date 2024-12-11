@@ -532,10 +532,9 @@ u64 __init e820__range_update(u64 start, u64 size, enum e820_type old_type, enum
 	return __e820__range_update(e820_table, start, size, old_type, new_type);
 }
 
-u64 __init e820__range_update_table(struct e820_table *t, u64 start, u64 size,
-				    enum e820_type old_type, enum e820_type new_type)
+static u64 __init e820__range_update_kexec(u64 start, u64 size, enum e820_type old_type, enum e820_type  new_type)
 {
-	return __e820__range_update(t, start, size, old_type, new_type);
+	return __e820__range_update(e820_table_kexec, start, size, old_type, new_type);
 }
 
 /* Remove a range of memory from the E820 table: */
@@ -807,7 +806,7 @@ u64 __init e820__memblock_alloc_reserved(u64 size, u64 align)
 
 	addr = memblock_phys_alloc(size, align);
 	if (addr) {
-		e820__range_update_table(e820_table_kexec, addr, size, E820_TYPE_RAM, E820_TYPE_RESERVED);
+		e820__range_update_kexec(addr, size, E820_TYPE_RAM, E820_TYPE_RESERVED);
 		pr_info("update e820_table_kexec for e820__memblock_alloc_reserved()\n");
 		e820__update_table_kexec();
 	}
@@ -828,7 +827,7 @@ u64 __init e820__memblock_alloc_reserved(u64 size, u64 align)
 /*
  * Find the highest page frame number we have available
  */
-static unsigned long __init e820__end_ram_pfn(unsigned long limit_pfn)
+static unsigned long __init e820_end_pfn(unsigned long limit_pfn, enum e820_type type)
 {
 	int i;
 	unsigned long last_pfn = 0;
@@ -839,8 +838,7 @@ static unsigned long __init e820__end_ram_pfn(unsigned long limit_pfn)
 		unsigned long start_pfn;
 		unsigned long end_pfn;
 
-		if (entry->type != E820_TYPE_RAM &&
-		    entry->type != E820_TYPE_ACPI)
+		if (entry->type != type)
 			continue;
 
 		start_pfn = entry->addr >> PAGE_SHIFT;
@@ -866,12 +864,12 @@ static unsigned long __init e820__end_ram_pfn(unsigned long limit_pfn)
 
 unsigned long __init e820__end_of_ram_pfn(void)
 {
-	return e820__end_ram_pfn(MAX_ARCH_PFN);
+	return e820_end_pfn(MAX_ARCH_PFN, E820_TYPE_RAM);
 }
 
 unsigned long __init e820__end_of_low_ram_pfn(void)
 {
-	return e820__end_ram_pfn(1UL << (32 - PAGE_SHIFT));
+	return e820_end_pfn(1UL << (32 - PAGE_SHIFT), E820_TYPE_RAM);
 }
 
 static void __init early_panic(char *msg)
@@ -1018,6 +1016,17 @@ void __init e820__reserve_setup_data(void)
 
 		e820__range_update(pa_data, sizeof(*data)+data->len, E820_TYPE_RAM, E820_TYPE_RESERVED_KERN);
 
+		/*
+		 * SETUP_EFI, SETUP_IMA and SETUP_RNG_SEED are supplied by
+		 * kexec and do not need to be reserved.
+		 */
+		if (data->type != SETUP_EFI &&
+		    data->type != SETUP_IMA &&
+		    data->type != SETUP_RNG_SEED)
+			e820__range_update_kexec(pa_data,
+						 sizeof(*data) + data->len,
+						 E820_TYPE_RAM, E820_TYPE_RESERVED_KERN);
+
 		if (data->type == SETUP_INDIRECT) {
 			len += data->len;
 			early_memunmap(data, sizeof(*data));
@@ -1029,9 +1038,12 @@ void __init e820__reserve_setup_data(void)
 
 			indirect = (struct setup_indirect *)data->data;
 
-			if (indirect->type != SETUP_INDIRECT)
+			if (indirect->type != SETUP_INDIRECT) {
 				e820__range_update(indirect->addr, indirect->len,
 						   E820_TYPE_RAM, E820_TYPE_RESERVED_KERN);
+				e820__range_update_kexec(indirect->addr, indirect->len,
+							 E820_TYPE_RAM, E820_TYPE_RESERVED_KERN);
+			}
 		}
 
 		pa_data = pa_next;
@@ -1039,6 +1051,7 @@ void __init e820__reserve_setup_data(void)
 	}
 
 	e820__update_table(e820_table);
+	e820__update_table(e820_table_kexec);
 
 	pr_info("extended physical RAM map:\n");
 	e820__print_table("reserve setup_data");

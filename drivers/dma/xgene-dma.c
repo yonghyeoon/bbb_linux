@@ -1742,7 +1742,7 @@ static int xgene_dma_probe(struct platform_device *pdev)
 	/* Initialize DMA channels software state */
 	xgene_dma_init_channels(pdma);
 
-	/* Configure DMA rings */
+	/* Configue DMA rings */
 	ret = xgene_dma_init_rings(pdma);
 	if (ret)
 		goto err_clk_enable;
@@ -1776,7 +1776,7 @@ err_clk_enable:
 	return ret;
 }
 
-static void xgene_dma_remove(struct platform_device *pdev)
+static int xgene_dma_remove(struct platform_device *pdev)
 {
 	struct xgene_dma *pdma = platform_get_drvdata(pdev);
 	struct xgene_dma_chan *chan;
@@ -1797,6 +1797,8 @@ static void xgene_dma_remove(struct platform_device *pdev)
 
 	if (!IS_ERR(pdma->clk))
 		clk_disable_unprepare(pdma->clk);
+
+	return 0;
 }
 
 #ifdef CONFIG_ACPI
@@ -1815,7 +1817,7 @@ MODULE_DEVICE_TABLE(of, xgene_dma_of_match_ptr);
 
 static struct platform_driver xgene_dma_driver = {
 	.probe = xgene_dma_probe,
-	.remove_new = xgene_dma_remove,
+	.remove = xgene_dma_remove,
 	.driver = {
 		.name = "X-Gene-DMA",
 		.of_match_table = xgene_dma_of_match_ptr,

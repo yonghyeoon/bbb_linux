@@ -23,8 +23,6 @@
 #include <linux/pm_runtime.h>
 
 #include "amd.h"
-#include "../mach-config.h"
-#include "acp-mach.h"
 
 #define DRV_NAME "acp_asoc_rembrandt"
 
@@ -39,6 +37,8 @@ static struct acp_resource rsrc = {
 	.irqp_used = 1,
 	.soc_mclk = true,
 	.irq_reg_offset = 0x1a00,
+	.i2s_pin_cfg_offset = 0x1440,
+	.i2s_mode = 0x0a,
 	.scratch_reg_offset = 0x12800,
 	.sram_pte_offset = 0x03802800,
 };
@@ -189,7 +189,6 @@ static int rembrandt_audio_probe(struct platform_device *pdev)
 	struct acp_chip_info *chip;
 	struct acp_dev_data *adata;
 	struct resource *res;
-	u32 ret;
 
 	chip = dev_get_platdata(&pdev->dev);
 	if (!chip || !chip->base) {
@@ -227,19 +226,12 @@ static int rembrandt_audio_probe(struct platform_device *pdev)
 	adata->dai_driver = acp_rmb_dai;
 	adata->num_dai = ARRAY_SIZE(acp_rmb_dai);
 	adata->rsrc = &rsrc;
-	adata->platform = REMBRANDT;
-	adata->flag = chip->flag;
-	adata->is_i2s_config = chip->is_i2s_config;
+
 	adata->machines = snd_soc_acpi_amd_rmb_acp_machines;
 	acp_machine_select(adata);
 
 	dev_set_drvdata(dev, adata);
-
-	if (chip->is_i2s_config && rsrc.soc_mclk) {
-		ret = acp6x_master_clock_generate(dev);
-		if (ret)
-			return ret;
-	}
+	acp6x_master_clock_generate(dev);
 	acp_enable_interrupts(adata);
 	acp_platform_register(dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, ACP_SUSPEND_DELAY_MS);
@@ -268,9 +260,7 @@ static int __maybe_unused rmb_pcm_resume(struct device *dev)
 	snd_pcm_uframes_t buf_in_frames;
 	u64 buf_size;
 
-	if (adata->is_i2s_config && adata->rsrc->soc_mclk)
-		acp6x_master_clock_generate(dev);
-
+	acp6x_master_clock_generate(dev);
 	spin_lock(&adata->acp_lock);
 	list_for_each_entry(stream, &adata->stream_list, list) {
 		substream = stream->substream;
@@ -295,7 +285,7 @@ static const struct dev_pm_ops rmb_dma_pm_ops = {
 
 static struct platform_driver rembrandt_driver = {
 	.probe = rembrandt_audio_probe,
-	.remove = rembrandt_audio_remove,
+	.remove_new = rembrandt_audio_remove,
 	.driver = {
 		.name = "acp_asoc_rembrandt",
 		.pm = &rmb_dma_pm_ops,

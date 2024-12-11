@@ -258,21 +258,17 @@ void nft_trace_notify(const struct nft_pktinfo *pkt,
 	case __NFT_TRACETYPE_MAX:
 		break;
 	case NFT_TRACETYPE_RETURN:
-	case NFT_TRACETYPE_RULE: {
-		unsigned int v;
-
+	case NFT_TRACETYPE_RULE:
 		if (nft_verdict_dump(skb, NFTA_TRACE_VERDICT, verdict))
 			goto nla_put_failure;
 
 		/* pkt->skb undefined iff NF_STOLEN, disable dump */
-		v = verdict->code & NF_VERDICT_MASK;
-		if (v == NF_STOLEN)
+		if (verdict->code == NF_STOLEN)
 			info->packet_dumped = true;
 		else
 			mark = pkt->skb->mark;
 
 		break;
-	}
 	case NFT_TRACETYPE_POLICY:
 		mark = pkt->skb->mark;
 
@@ -317,7 +313,7 @@ void nft_trace_init(struct nft_traceinfo *info, const struct nft_pktinfo *pkt,
 	net_get_random_once(&trace_key, sizeof(trace_key));
 
 	info->skbid = (u32)siphash_3u32(hash32_ptr(skb),
-					skb_get_hash_net(nft_net(pkt), skb),
+					skb_get_hash(skb),
 					skb->skb_iif,
 					&trace_key);
 }

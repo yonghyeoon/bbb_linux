@@ -46,7 +46,8 @@ void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
 }
 
 /* Must be called with rcu lock held */
-static struct tcp_congestion_ops *tcp_ca_find_autoload(const char *name)
+static struct tcp_congestion_ops *tcp_ca_find_autoload(struct net *net,
+						       const char *name)
 {
 	struct tcp_congestion_ops *ca = tcp_ca_find(name);
 
@@ -145,7 +146,11 @@ EXPORT_SYMBOL_GPL(tcp_unregister_congestion_control);
 int tcp_update_congestion_control(struct tcp_congestion_ops *ca, struct tcp_congestion_ops *old_ca)
 {
 	struct tcp_congestion_ops *existing;
-	int ret = 0;
+	int ret;
+
+	ret = tcp_validate_congestion_control(ca);
+	if (ret)
+		return ret;
 
 	ca->key = jhash(ca->name, sizeof(ca->name), strlen(ca->name));
 
@@ -177,7 +182,7 @@ int tcp_update_congestion_control(struct tcp_congestion_ops *ca, struct tcp_cong
 	return ret;
 }
 
-u32 tcp_ca_get_key_by_name(const char *name, bool *ecn_ca)
+u32 tcp_ca_get_key_by_name(struct net *net, const char *name, bool *ecn_ca)
 {
 	const struct tcp_congestion_ops *ca;
 	u32 key = TCP_CA_UNSPEC;
@@ -185,7 +190,7 @@ u32 tcp_ca_get_key_by_name(const char *name, bool *ecn_ca)
 	might_sleep();
 
 	rcu_read_lock();
-	ca = tcp_ca_find_autoload(name);
+	ca = tcp_ca_find_autoload(net, name);
 	if (ca) {
 		key = ca->key;
 		*ecn_ca = ca->flags & TCP_CONG_NEEDS_ECN;
@@ -202,10 +207,9 @@ char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 
 	rcu_read_lock();
 	ca = tcp_ca_find_key(key);
-	if (ca) {
-		strscpy(buffer, ca->name, TCP_CA_NAME_MAX);
-		ret = buffer;
-	}
+	if (ca)
+		ret = strncpy(buffer, ca->name,
+			      TCP_CA_NAME_MAX);
 	rcu_read_unlock();
 
 	return ret;
@@ -283,7 +287,7 @@ int tcp_set_default_congestion_control(struct net *net, const char *name)
 	int ret;
 
 	rcu_read_lock();
-	ca = tcp_ca_find_autoload(name);
+	ca = tcp_ca_find_autoload(net, name);
 	if (!ca) {
 		ret = -ENOENT;
 	} else if (!bpf_try_module_get(ca, ca->owner)) {
@@ -338,7 +342,7 @@ void tcp_get_default_congestion_control(struct net *net, char *name)
 
 	rcu_read_lock();
 	ca = rcu_dereference(net->ipv4.tcp_congestion_control);
-	strscpy(name, ca->name, TCP_CA_NAME_MAX);
+	strncpy(name, ca->name, TCP_CA_NAME_MAX);
 	rcu_read_unlock();
 }
 
@@ -421,7 +425,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name, bool load,
 	if (!load)
 		ca = tcp_ca_find(name);
 	else
-		ca = tcp_ca_find_autoload(name);
+		ca = tcp_ca_find_autoload(sock_net(sk), name);
 
 	/* No change asking for existing value */
 	if (ca == icsk->icsk_ca_ops) {

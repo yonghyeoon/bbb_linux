@@ -52,7 +52,7 @@ static void *rtllib_ccmp_init(int key_idx)
 	struct rtllib_ccmp_data *priv;
 
 	priv = kzalloc(sizeof(*priv), GFP_ATOMIC);
-	if (!priv)
+	if (priv == NULL)
 		goto fail;
 	priv->key_idx = key_idx;
 
@@ -83,7 +83,7 @@ static void rtllib_ccmp_deinit(void *priv)
 	kfree(priv);
 }
 
-static int ccmp_init_iv_and_aad(struct ieee80211_hdr *hdr,
+static int ccmp_init_iv_and_aad(struct rtllib_hdr_4addr *hdr,
 				u8 *pn, u8 *iv, u8 *aad)
 {
 	u8 *pos, qc = 0;
@@ -91,8 +91,9 @@ static int ccmp_init_iv_and_aad(struct ieee80211_hdr *hdr,
 	u16 fc;
 	int a4_included, qc_included;
 
-	fc = le16_to_cpu(hdr->frame_control);
-	a4_included = ieee80211_has_a4(hdr->frame_control);
+	fc = le16_to_cpu(hdr->frame_ctl);
+	a4_included = ((fc & (RTLLIB_FCTL_TODS | RTLLIB_FCTL_FROMDS)) ==
+		       (RTLLIB_FCTL_TODS | RTLLIB_FCTL_FROMDS));
 
 	qc_included = ((WLAN_FC_GET_TYPE(fc) == RTLLIB_FTYPE_DATA) &&
 		       (WLAN_FC_GET_STYPE(fc) & 0x80));
@@ -133,7 +134,7 @@ static int ccmp_init_iv_and_aad(struct ieee80211_hdr *hdr,
 	memcpy(&aad[2], &hdr->addr1, ETH_ALEN);
 	memcpy(&aad[8], &hdr->addr2, ETH_ALEN);
 	memcpy(&aad[14], &hdr->addr3, ETH_ALEN);
-	pos = (u8 *)&hdr->seq_ctrl;
+	pos = (u8 *)&hdr->seq_ctl;
 	aad[20] = pos[0] & 0x0f;
 	aad[21] = 0; /* all bits masked */
 	memset(aad + 22, 0, 8);
@@ -152,7 +153,7 @@ static int rtllib_ccmp_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	struct rtllib_ccmp_data *key = priv;
 	int i;
 	u8 *pos;
-	struct ieee80211_hdr *hdr;
+	struct rtllib_hdr_4addr *hdr;
 	struct cb_desc *tcb_desc = (struct cb_desc *)(skb->cb +
 				    MAX_DEV_ADDR_SIZE);
 	if (skb_headroom(skb) < CCMP_HDR_LEN ||
@@ -181,8 +182,8 @@ static int rtllib_ccmp_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	*pos++ = key->tx_pn[1];
 	*pos++ = key->tx_pn[0];
 
-	hdr = (struct ieee80211_hdr *)skb->data;
-	if (!tcb_desc->hw_sec) {
+	hdr = (struct rtllib_hdr_4addr *)skb->data;
+	if (!tcb_desc->bHwSec) {
 		struct aead_request *req;
 		struct scatterlist sg[2];
 		u8 *aad = key->tx_aad;
@@ -219,7 +220,7 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 {
 	struct rtllib_ccmp_data *key = priv;
 	u8 keyidx, *pos;
-	struct ieee80211_hdr *hdr;
+	struct rtllib_hdr_4addr *hdr;
 	struct cb_desc *tcb_desc = (struct cb_desc *)(skb->cb +
 				    MAX_DEV_ADDR_SIZE);
 	u8 pn[6];
@@ -229,7 +230,7 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 		return -1;
 	}
 
-	hdr = (struct ieee80211_hdr *)skb->data;
+	hdr = (struct rtllib_hdr_4addr *)skb->data;
 	pos = skb->data + hdr_len;
 	keyidx = pos[3];
 	if (!(keyidx & (1 << 5))) {
@@ -265,7 +266,7 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 		key->dot11rsna_stats_ccmp_replays++;
 		return -4;
 	}
-	if (!tcb_desc->hw_sec) {
+	if (!tcb_desc->bHwSec) {
 		size_t data_len = skb->len - hdr_len - CCMP_HDR_LEN;
 		struct aead_request *req;
 		struct scatterlist sg[2];
@@ -378,7 +379,7 @@ static void rtllib_ccmp_print_stats(struct seq_file *m, void *priv)
 		   ccmp->dot11rsna_stats_ccmp_decrypt_errors);
 }
 
-static const struct lib80211_crypto_ops rtllib_crypt_ccmp = {
+static struct lib80211_crypto_ops rtllib_crypt_ccmp = {
 	.name			= "R-CCMP",
 	.init			= rtllib_ccmp_init,
 	.deinit			= rtllib_ccmp_deinit,
@@ -407,5 +408,4 @@ static void __exit rtllib_crypto_ccmp_exit(void)
 module_init(rtllib_crypto_ccmp_init);
 module_exit(rtllib_crypto_ccmp_exit);
 
-MODULE_DESCRIPTION("Support module for rtllib CCMP crypto");
 MODULE_LICENSE("GPL");

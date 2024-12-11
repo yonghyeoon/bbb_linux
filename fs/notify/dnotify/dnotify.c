@@ -29,6 +29,7 @@ static struct ctl_table dnotify_sysctls[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
+	{}
 };
 static void __init dnotify_sysctl_init(void)
 {
@@ -38,9 +39,9 @@ static void __init dnotify_sysctl_init(void)
 #define dnotify_sysctl_init() do { } while (0)
 #endif
 
-static struct kmem_cache *dnotify_struct_cache __ro_after_init;
-static struct kmem_cache *dnotify_mark_cache __ro_after_init;
-static struct fsnotify_group *dnotify_group __ro_after_init;
+static struct kmem_cache *dnotify_struct_cache __read_mostly;
+static struct kmem_cache *dnotify_mark_cache __read_mostly;
+static struct fsnotify_group *dnotify_group __read_mostly;
 
 /*
  * dnotify will attach one of these to each inode (i_fsnotify_marks) which
@@ -110,7 +111,7 @@ static int dnotify_handle_event(struct fsnotify_mark *inode_mark, u32 mask,
 			prev = &dn->dn_next;
 			continue;
 		}
-		fown = file_f_owner(dn->dn_filp);
+		fown = &dn->dn_filp->f_owner;
 		send_sigio(fown, dn->dn_fd, POLL_MSG);
 		if (dn->dn_mask & FS_DN_MULTISHOT)
 			prev = &dn->dn_next;
@@ -162,7 +163,7 @@ void dnotify_flush(struct file *filp, fl_owner_t id)
 	if (!S_ISDIR(inode->i_mode))
 		return;
 
-	fsn_mark = fsnotify_find_inode_mark(inode, dnotify_group);
+	fsn_mark = fsnotify_find_mark(&inode->i_fsnotify_marks, dnotify_group);
 	if (!fsn_mark)
 		return;
 	dn_mark = container_of(fsn_mark, struct dnotify_mark, fsn_mark);
@@ -264,7 +265,7 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned int arg)
 	struct dnotify_struct *dn;
 	struct inode *inode;
 	fl_owner_t id = current->files;
-	struct file *f = NULL;
+	struct file *f;
 	int destroy = 0, error = 0;
 	__u32 mask;
 
@@ -316,10 +317,6 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned int arg)
 		goto out_err;
 	}
 
-	error = file_f_owner_allocate(filp);
-	if (error)
-		goto out_err;
-
 	/* set up the new_fsn_mark and new_dn_mark */
 	new_fsn_mark = &new_dn_mark->fsn_mark;
 	fsnotify_init_mark(new_fsn_mark, dnotify_group);
@@ -330,7 +327,7 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned int arg)
 	fsnotify_group_lock(dnotify_group);
 
 	/* add the new_fsn_mark or find an old one. */
-	fsn_mark = fsnotify_find_inode_mark(inode, dnotify_group);
+	fsn_mark = fsnotify_find_mark(&inode->i_fsnotify_marks, dnotify_group);
 	if (fsn_mark) {
 		dn_mark = container_of(fsn_mark, struct dnotify_mark, fsn_mark);
 		spin_lock(&fsn_mark->lock);
@@ -348,7 +345,7 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned int arg)
 	}
 
 	rcu_read_lock();
-	f = lookup_fdget_rcu(fd);
+	f = lookup_fd_rcu(fd);
 	rcu_read_unlock();
 
 	/* if (f != filp) means that we lost a race and another task/thread
@@ -395,8 +392,6 @@ out_err:
 		fsnotify_put_mark(new_fsn_mark);
 	if (dn)
 		kmem_cache_free(dnotify_struct_cache, dn);
-	if (f)
-		fput(f);
 	return error;
 }
 
@@ -406,7 +401,8 @@ static int __init dnotify_init(void)
 					  SLAB_PANIC|SLAB_ACCOUNT);
 	dnotify_mark_cache = KMEM_CACHE(dnotify_mark, SLAB_PANIC|SLAB_ACCOUNT);
 
-	dnotify_group = fsnotify_alloc_group(&dnotify_fsnotify_ops, 0);
+	dnotify_group = fsnotify_alloc_group(&dnotify_fsnotify_ops,
+					     FSNOTIFY_GROUP_NOFS);
 	if (IS_ERR(dnotify_group))
 		panic("unable to allocate fsnotify group for dnotify\n");
 	dnotify_sysctl_init();

@@ -163,8 +163,7 @@ static void validate_timestamp(struct timespec *cur, int min_delay)
 	if (cur64 < start64 + min_delay || cur64 > start64 + max_delay) {
 		fprintf(stderr, "ERROR: %" PRId64 " us expected between %d and %d\n",
 				cur64 - start64, min_delay, max_delay);
-		if (!getenv("KSFT_MACHINE_SLOW"))
-			test_failed = true;
+		test_failed = true;
 	}
 }
 
@@ -356,12 +355,8 @@ static void __recv_errmsg_cmsg(struct msghdr *msg, int payload_len)
 		}
 	}
 
-	if (batch > 1) {
+	if (batch > 1)
 		fprintf(stderr, "batched %d timestamps\n", batch);
-	} else if (!batch) {
-		fprintf(stderr, "Failed to report timestamps\n");
-		test_failed = true;
-	}
 }
 
 static int recv_errmsg(int fd)

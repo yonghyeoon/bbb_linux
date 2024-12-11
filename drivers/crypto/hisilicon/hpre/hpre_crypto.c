@@ -57,9 +57,6 @@ struct hpre_ctx;
 #define HPRE_DRV_ECDH_MASK_CAP		BIT(2)
 #define HPRE_DRV_X25519_MASK_CAP	BIT(5)
 
-static DEFINE_MUTEX(hpre_algs_lock);
-static unsigned int hpre_available_devs;
-
 typedef void (*hpre_cb)(struct hpre_ctx *ctx, void *sqe);
 
 struct hpre_rsa_ctx {
@@ -575,9 +572,7 @@ static int hpre_send(struct hpre_ctx *ctx, struct hpre_sqe *msg)
 
 	do {
 		atomic64_inc(&dfx[HPRE_SEND_CNT].value);
-		spin_lock_bh(&ctx->req_lock);
 		ret = hisi_qp_send(ctx->qp, msg);
-		spin_unlock_bh(&ctx->req_lock);
 		if (ret != -EBUSY)
 			break;
 		atomic64_inc(&dfx[HPRE_SEND_BUSY_CNT].value);
@@ -2207,17 +2202,11 @@ static void hpre_unregister_x25519(struct hisi_qm *qm)
 
 int hpre_algs_register(struct hisi_qm *qm)
 {
-	int ret = 0;
-
-	mutex_lock(&hpre_algs_lock);
-	if (hpre_available_devs) {
-		hpre_available_devs++;
-		goto unlock;
-	}
+	int ret;
 
 	ret = hpre_register_rsa(qm);
 	if (ret)
-		goto unlock;
+		return ret;
 
 	ret = hpre_register_dh(qm);
 	if (ret)
@@ -2231,9 +2220,6 @@ int hpre_algs_register(struct hisi_qm *qm)
 	if (ret)
 		goto unreg_ecdh;
 
-	hpre_available_devs++;
-	mutex_unlock(&hpre_algs_lock);
-
 	return ret;
 
 unreg_ecdh:
@@ -2242,22 +2228,13 @@ unreg_dh:
 	hpre_unregister_dh(qm);
 unreg_rsa:
 	hpre_unregister_rsa(qm);
-unlock:
-	mutex_unlock(&hpre_algs_lock);
 	return ret;
 }
 
 void hpre_algs_unregister(struct hisi_qm *qm)
 {
-	mutex_lock(&hpre_algs_lock);
-	if (--hpre_available_devs)
-		goto unlock;
-
 	hpre_unregister_x25519(qm);
 	hpre_unregister_ecdh(qm);
 	hpre_unregister_dh(qm);
 	hpre_unregister_rsa(qm);
-
-unlock:
-	mutex_unlock(&hpre_algs_lock);
 }

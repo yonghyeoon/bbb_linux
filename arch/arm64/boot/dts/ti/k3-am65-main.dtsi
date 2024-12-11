@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only OR MIT
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device Tree Source for AM6 SoC Family Main Domain peripherals
  *
- * Copyright (C) 2016-2024 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2016-2018 Texas Instruments Incorporated - https://www.ti.com/
  */
 #include <dt-bindings/phy/phy-am654-serdes.h>
 
@@ -54,14 +54,6 @@
 		};
 	};
 
-	main_esm: esm@700000 {
-		compatible = "ti,j721e-esm";
-		reg = <0x00 0x700000 0x00 0x1000>;
-		bootph-pre-ram;
-		/* Interrupt sources: rti0, rti1, rti2, rti3 */
-		ti,esm-pins = <224>, <225>, <226>, <227>;
-	};
-
 	serdes0: serdes@900000 {
 		compatible = "ti,phy-am654-serdes";
 		reg = <0x0 0x900000 0x0 0x2000>;
@@ -74,7 +66,7 @@
 		assigned-clock-parents = <&k3_clks 153 8>, <&k3_clks 153 4>;
 		ti,serdes-clk = <&serdes0_clk>;
 		#clock-cells = <1>;
-		mux-controls = <&serdes0_mux 0>;
+		mux-controls = <&serdes_mux 0>;
 	};
 
 	serdes1: serdes@910000 {
@@ -89,7 +81,7 @@
 		assigned-clock-parents = <&k3_clks 154 9>, <&k3_clks 154 5>;
 		ti,serdes-clk = <&serdes1_clk>;
 		#clock-cells = <1>;
-		mux-controls = <&serdes1_mux 0>;
+		mux-controls = <&serdes_mux 1>;
 	};
 
 	main_uart0: serial@2800000 {
@@ -97,6 +89,7 @@
 		reg = <0x00 0x02800000 0x00 0x100>;
 		interrupts = <GIC_SPI 192 IRQ_TYPE_LEVEL_HIGH>;
 		clock-frequency = <48000000>;
+		current-speed = <115200>;
 		power-domains = <&k3_pds 146 TI_SCI_PD_EXCLUSIVE>;
 		status = "disabled";
 	};
@@ -486,25 +479,20 @@
 		ranges = <0x0 0x0 0x00100000 0x1c000>;
 
 		serdes0_clk: clock@4080 {
-			compatible = "ti,am654-serdes-ctrl", "syscon", "simple-mfd";
-			reg = <0x4080 0x4>;
-
-			serdes0_mux: mux-controller {
-				compatible = "mmio-mux";
-				#mux-control-cells = <1>;
-				mux-reg-masks = <0x0 0x3>; /* lane select */
-			};
+			compatible = "syscon";
+			reg = <0x00004080 0x4>;
 		};
 
 		serdes1_clk: clock@4090 {
-			compatible = "ti,am654-serdes-ctrl", "syscon", "simple-mfd";
-			reg = <0x4090 0x4>;
+			compatible = "syscon";
+			reg = <0x00004090 0x4>;
+		};
 
-			serdes1_mux: mux-controller {
-				compatible = "mmio-mux";
-				#mux-control-cells = <1>;
-				mux-reg-masks = <0x0 0x3>; /* lane select */
-			};
+		serdes_mux: mux-controller {
+			compatible = "mmio-mux";
+			#mux-control-cells = <1>;
+			mux-reg-masks = <0x4080 0x3>, /* SERDES0 lane select */
+					<0x4090 0x3>; /* SERDES1 lane select */
 		};
 
 		dss_oldi_io_ctrl: dss-oldi-io-ctrl@41e0 {
@@ -1098,6 +1086,17 @@
 		status = "disabled";
 	};
 
+	timesync_router: pinctrl@a40000 {
+		compatible = "pinctrl-single";
+		reg = <0x0 0xa40000 0x0 0x800>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		#pinctrl-cells = <1>;
+		pinctrl-single,register-width = <32>;
+		pinctrl-single,function-mask = <0x800007ff>;
+		status = "disabled";
+	};
+
 	icssg0: icssg@b000000 {
 		compatible = "ti,am654-icssg";
 		reg = <0x00 0xb000000 0x00 0x80000>;
@@ -1165,6 +1164,11 @@
 		icssg0_mii_g_rt: mii-g-rt@33000 {
 			compatible = "ti,pruss-mii-g", "syscon";
 			reg = <0x33000 0x1000>;
+		};
+
+		icssg0_pa_stats: pa-stats@2c000 {
+			compatible = "ti,pruss-pa-st", "syscon";
+			reg = <0x2c000 0x1000>;
 		};
 
 		icssg0_intc: interrupt-controller@20000 {
@@ -1333,6 +1337,11 @@
 			reg = <0x33000 0x1000>;
 		};
 
+		icssg1_pa_stats: pa-stats@2c000 {
+			compatible = "ti,pruss-pa-st", "syscon";
+			reg = <0x2c000 0x1000>;
+		};
+
 		icssg1_intc: interrupt-controller@20000 {
 			compatible = "ti,icssg-intc";
 			reg = <0x20000 0x2000>;
@@ -1497,6 +1506,11 @@
 		icssg2_mii_g_rt: mii-g-rt@33000 {
 			compatible = "ti,pruss-mii-g", "syscon";
 			reg = <0x33000 0x1000>;
+		};
+
+		icssg2_pa_stats: pa-stats@2c000 {
+			compatible = "ti,pruss-pa-st", "syscon";
+			reg = <0x2c000 0x1000>;
 		};
 
 		icssg2_intc: interrupt-controller@20000 {

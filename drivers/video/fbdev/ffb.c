@@ -37,10 +37,9 @@ static void ffb_imageblit(struct fb_info *, const struct fb_image *);
 static void ffb_fillrect(struct fb_info *, const struct fb_fillrect *);
 static void ffb_copyarea(struct fb_info *, const struct fb_copyarea *);
 static int ffb_sync(struct fb_info *);
+static int ffb_mmap(struct fb_info *, struct vm_area_struct *);
+static int ffb_ioctl(struct fb_info *, unsigned int, unsigned long);
 static int ffb_pan_display(struct fb_var_screeninfo *, struct fb_info *);
-
-static int ffb_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma);
-static int ffb_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg);
 
 /*
  *  Frame buffer operations
@@ -48,7 +47,6 @@ static int ffb_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned lon
 
 static const struct fb_ops ffb_ops = {
 	.owner			= THIS_MODULE,
-	__FB_DEFAULT_SBUS_OPS_RDWR(ffb),
 	.fb_setcolreg		= ffb_setcolreg,
 	.fb_blank		= ffb_blank,
 	.fb_pan_display		= ffb_pan_display,
@@ -56,8 +54,11 @@ static const struct fb_ops ffb_ops = {
 	.fb_copyarea		= ffb_copyarea,
 	.fb_imageblit		= ffb_imageblit,
 	.fb_sync		= ffb_sync,
-	__FB_DEFAULT_SBUS_OPS_IOCTL(ffb),
-	__FB_DEFAULT_SBUS_OPS_MMAP(ffb),
+	.fb_mmap		= ffb_mmap,
+	.fb_ioctl		= ffb_ioctl,
+#ifdef CONFIG_COMPAT
+	.fb_compat_ioctl	= sbusfb_compat_ioctl,
+#endif
 };
 
 /* Register layout and definitions */
@@ -710,7 +711,7 @@ static int ffb_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
-static const struct sbus_mmap_map ffb_mmap_map[] = {
+static struct sbus_mmap_map ffb_mmap_map[] = {
 	{
 		.voff	= FFB_SFB8R_VOFF,
 		.poff	= FFB_SFB8R_POFF,
@@ -849,7 +850,7 @@ static const struct sbus_mmap_map ffb_mmap_map[] = {
 	{ .size = 0 }
 };
 
-static int ffb_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
+static int ffb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct ffb_par *par = (struct ffb_par *)info->par;
 
@@ -858,7 +859,7 @@ static int ffb_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 				  0, vma);
 }
 
-static int ffb_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+static int ffb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 {
 	struct ffb_par *par = (struct ffb_par *)info->par;
 
@@ -1053,7 +1054,7 @@ static struct platform_driver ffb_driver = {
 		.of_match_table = ffb_match,
 	},
 	.probe		= ffb_probe,
-	.remove		= ffb_remove,
+	.remove_new	= ffb_remove,
 };
 
 static int __init ffb_init(void)

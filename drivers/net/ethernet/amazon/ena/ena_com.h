@@ -42,14 +42,12 @@
 #define ADMIN_CQ_SIZE(depth)	((depth) * sizeof(struct ena_admin_acq_entry))
 #define ADMIN_AENQ_SIZE(depth)	((depth) * sizeof(struct ena_admin_aenq_entry))
 
-#define ENA_CUSTOMER_METRICS_BUFFER_SIZE 512
-
 /*****************************************************************************/
 /*****************************************************************************/
 /* ENA adaptive interrupt moderation settings */
 
 #define ENA_INTR_INITIAL_TX_INTERVAL_USECS 64
-#define ENA_INTR_INITIAL_RX_INTERVAL_USECS 20
+#define ENA_INTR_INITIAL_RX_INTERVAL_USECS 0
 #define ENA_DEFAULT_INTR_DELAY_RESOLUTION 1
 
 #define ENA_HASH_KEY_SIZE 40
@@ -111,13 +109,16 @@ struct ena_com_io_cq {
 	/* Interrupt unmask register */
 	u32 __iomem *unmask_reg;
 
+	/* The completion queue head doorbell register */
+	u32 __iomem *cq_head_db_reg;
+
 	/* numa configuration register (for TPH) */
 	u32 __iomem *numa_node_cfg_reg;
 
 	/* The value to write to the above register to unmask
 	 * the interrupt of this queue
 	 */
-	u32 msix_vector ____cacheline_aligned;
+	u32 msix_vector;
 
 	enum queue_direction direction;
 
@@ -133,6 +134,7 @@ struct ena_com_io_cq {
 	/* Device queue index */
 	u16 idx;
 	u16 head;
+	u16 last_head_update;
 	u8 phase;
 	u8 cdesc_entry_size_in_bytes;
 
@@ -156,6 +158,7 @@ struct ena_com_io_sq {
 	struct ena_com_io_desc_addr desc_addr;
 
 	u32 __iomem *db_addr;
+	u8 __iomem *header_addr;
 
 	enum queue_direction direction;
 	enum ena_admin_placement_policy_type mem_queue_type;
@@ -280,16 +283,6 @@ struct ena_rss {
 
 };
 
-struct ena_customer_metrics {
-	/* in correlation with ENA_ADMIN_CUSTOMER_METRICS_SUPPORT_MASK
-	 * and ena_admin_customer_metrics_id
-	 */
-	u64 supported_metrics;
-	dma_addr_t buffer_dma_addr;
-	void *buffer_virt_addr;
-	u32 buffer_len;
-};
-
 struct ena_host_attribute {
 	/* Debug area */
 	u8 *debug_area_virt_addr;
@@ -317,8 +310,6 @@ struct ena_com_dev {
 	u16 stats_func; /* Selected function for extended statistic dump */
 	u16 stats_queue; /* Selected queue for extended statistic dump */
 
-	u32 ena_min_poll_delay_us;
-
 	struct ena_com_mmio_read mmio_read;
 
 	struct ena_rss rss;
@@ -340,7 +331,7 @@ struct ena_com_dev {
 
 	struct ena_com_llq_info llq_info;
 
-	struct ena_customer_metrics customer_metrics;
+	u32 ena_min_poll_delay_us;
 };
 
 struct ena_com_dev_get_features_ctx {
@@ -609,24 +600,6 @@ int ena_com_get_dev_basic_stats(struct ena_com_dev *ena_dev,
 int ena_com_get_eni_stats(struct ena_com_dev *ena_dev,
 			  struct ena_admin_eni_stats *stats);
 
-/* ena_com_get_ena_srd_info - Get ENA SRD network interface statistics
- * @ena_dev: ENA communication layer struct
- * @info: ena srd stats and flags
- *
- * @return: 0 on Success and negative value otherwise.
- */
-int ena_com_get_ena_srd_info(struct ena_com_dev *ena_dev,
-			     struct ena_admin_ena_srd_info *info);
-
-/* ena_com_get_customer_metrics - Get customer metrics for network interface
- * @ena_dev: ENA communication layer struct
- * @buffer: buffer for returned customer metrics
- * @len: size of the buffer
- *
- * @return: 0 on Success and negative value otherwise.
- */
-int ena_com_get_customer_metrics(struct ena_com_dev *ena_dev, char *buffer, u32 len);
-
 /* ena_com_set_dev_mtu - Configure the device mtu.
  * @ena_dev: ENA communication layer struct
  * @mtu: mtu value
@@ -837,13 +810,6 @@ int ena_com_allocate_host_info(struct ena_com_dev *ena_dev);
 int ena_com_allocate_debug_area(struct ena_com_dev *ena_dev,
 				u32 debug_area_size);
 
-/* ena_com_allocate_customer_metrics_buffer - Allocate customer metrics resources.
- * @ena_dev: ENA communication layer struct
- *
- * @return: 0 on Success and negative value otherwise.
- */
-int ena_com_allocate_customer_metrics_buffer(struct ena_com_dev *ena_dev);
-
 /* ena_com_delete_debug_area - Free the debug area resources.
  * @ena_dev: ENA communication layer struct
  *
@@ -857,13 +823,6 @@ void ena_com_delete_debug_area(struct ena_com_dev *ena_dev);
  * Free the allocated host info.
  */
 void ena_com_delete_host_info(struct ena_com_dev *ena_dev);
-
-/* ena_com_delete_customer_metrics_buffer - Free the customer metrics resources.
- * @ena_dev: ENA communication layer struct
- *
- * Free the allocated customer metrics area.
- */
-void ena_com_delete_customer_metrics_buffer(struct ena_com_dev *ena_dev);
 
 /* ena_com_set_host_attributes - Update the device with the host
  * attributes (debug area and host info) base address.
@@ -1019,28 +978,6 @@ static inline bool ena_com_get_cap(struct ena_com_dev *ena_dev,
 				   enum ena_admin_aq_caps_id cap_id)
 {
 	return !!(ena_dev->capabilities & BIT(cap_id));
-}
-
-/* ena_com_get_customer_metric_support - query whether device supports a given customer metric.
- * @ena_dev: ENA communication layer struct
- * @metric_id: enum value representing the customer metric
- *
- * @return - true if customer metric is supported or false otherwise
- */
-static inline bool ena_com_get_customer_metric_support(struct ena_com_dev *ena_dev,
-						       enum ena_admin_customer_metrics_id metric_id)
-{
-	return !!(ena_dev->customer_metrics.supported_metrics & BIT(metric_id));
-}
-
-/* ena_com_get_customer_metric_count - return the number of supported customer metrics.
- * @ena_dev: ENA communication layer struct
- *
- * @return - the number of supported customer metrics
- */
-static inline int ena_com_get_customer_metric_count(struct ena_com_dev *ena_dev)
-{
-	return hweight64(ena_dev->customer_metrics.supported_metrics);
 }
 
 /* ena_com_update_intr_reg - Prepare interrupt register

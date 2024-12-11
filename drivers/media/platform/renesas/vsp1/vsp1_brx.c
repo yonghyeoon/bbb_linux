@@ -96,6 +96,13 @@ static int brx_enum_frame_size(struct v4l2_subdev *subdev,
 	return 0;
 }
 
+static struct v4l2_rect *brx_get_compose(struct vsp1_brx *brx,
+					 struct v4l2_subdev_state *sd_state,
+					 unsigned int pad)
+{
+	return v4l2_subdev_get_try_compose(&brx->entity.subdev, sd_state, pad);
+}
+
 static void brx_try_format(struct vsp1_brx *brx,
 			   struct v4l2_subdev_state *sd_state,
 			   unsigned int pad, struct v4l2_mbus_framefmt *fmt)
@@ -112,8 +119,8 @@ static void brx_try_format(struct vsp1_brx *brx,
 
 	default:
 		/* The BRx can't perform format conversion. */
-		format = v4l2_subdev_state_get_format(sd_state,
-						      BRX_PAD_SINK(0));
+		format = vsp1_entity_get_pad_format(&brx->entity, sd_state,
+						    BRX_PAD_SINK(0));
 		fmt->code = format->code;
 		break;
 	}
@@ -129,28 +136,29 @@ static int brx_set_format(struct v4l2_subdev *subdev,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct vsp1_brx *brx = to_brx(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
 	mutex_lock(&brx->entity.lock);
 
-	state = vsp1_entity_get_state(&brx->entity, sd_state, fmt->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&brx->entity, sd_state,
+					    fmt->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
-	brx_try_format(brx, state, fmt->pad, &fmt->format);
+	brx_try_format(brx, config, fmt->pad, &fmt->format);
 
-	format = v4l2_subdev_state_get_format(state, fmt->pad);
+	format = vsp1_entity_get_pad_format(&brx->entity, config, fmt->pad);
 	*format = fmt->format;
 
 	/* Reset the compose rectangle. */
 	if (fmt->pad != brx->entity.source_pad) {
 		struct v4l2_rect *compose;
 
-		compose = v4l2_subdev_state_get_compose(state, fmt->pad);
+		compose = brx_get_compose(brx, config, fmt->pad);
 		compose->left = 0;
 		compose->top = 0;
 		compose->width = format->width;
@@ -162,7 +170,8 @@ static int brx_set_format(struct v4l2_subdev *subdev,
 		unsigned int i;
 
 		for (i = 0; i <= brx->entity.source_pad; ++i) {
-			format = v4l2_subdev_state_get_format(state, i);
+			format = vsp1_entity_get_pad_format(&brx->entity,
+							    config, i);
 			format->code = fmt->format.code;
 		}
 	}
@@ -177,7 +186,7 @@ static int brx_get_selection(struct v4l2_subdev *subdev,
 			     struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_brx *brx = to_brx(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 
 	if (sel->pad == brx->entity.source_pad)
 		return -EINVAL;
@@ -191,13 +200,13 @@ static int brx_get_selection(struct v4l2_subdev *subdev,
 		return 0;
 
 	case V4L2_SEL_TGT_COMPOSE:
-		state = vsp1_entity_get_state(&brx->entity, sd_state,
-					      sel->which);
-		if (!state)
+		config = vsp1_entity_get_pad_config(&brx->entity, sd_state,
+						    sel->which);
+		if (!config)
 			return -EINVAL;
 
 		mutex_lock(&brx->entity.lock);
-		sel->r = *v4l2_subdev_state_get_compose(state, sel->pad);
+		sel->r = *brx_get_compose(brx, config, sel->pad);
 		mutex_unlock(&brx->entity.lock);
 		return 0;
 
@@ -211,7 +220,7 @@ static int brx_set_selection(struct v4l2_subdev *subdev,
 			     struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_brx *brx = to_brx(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *compose;
 	int ret = 0;
@@ -224,8 +233,9 @@ static int brx_set_selection(struct v4l2_subdev *subdev,
 
 	mutex_lock(&brx->entity.lock);
 
-	state = vsp1_entity_get_state(&brx->entity, sd_state, sel->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&brx->entity, sd_state,
+					    sel->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
@@ -234,7 +244,8 @@ static int brx_set_selection(struct v4l2_subdev *subdev,
 	 * The compose rectangle top left corner must be inside the output
 	 * frame.
 	 */
-	format = v4l2_subdev_state_get_format(state, brx->entity.source_pad);
+	format = vsp1_entity_get_pad_format(&brx->entity, config,
+					    brx->entity.source_pad);
 	sel->r.left = clamp_t(unsigned int, sel->r.left, 0, format->width - 1);
 	sel->r.top = clamp_t(unsigned int, sel->r.top, 0, format->height - 1);
 
@@ -242,11 +253,11 @@ static int brx_set_selection(struct v4l2_subdev *subdev,
 	 * Scaling isn't supported, the compose rectangle size must be identical
 	 * to the sink format size.
 	 */
-	format = v4l2_subdev_state_get_format(state, sel->pad);
+	format = vsp1_entity_get_pad_format(&brx->entity, config, sel->pad);
 	sel->r.width = format->width;
 	sel->r.height = format->height;
 
-	compose = v4l2_subdev_state_get_compose(state, sel->pad);
+	compose = brx_get_compose(brx, config, sel->pad);
 	*compose = sel->r;
 
 done:
@@ -255,6 +266,7 @@ done:
 }
 
 static const struct v4l2_subdev_pad_ops brx_pad_ops = {
+	.init_cfg = vsp1_entity_init_cfg,
 	.enum_mbus_code = brx_enum_mbus_code,
 	.enum_frame_size = brx_enum_frame_size,
 	.get_fmt = vsp1_subdev_get_pad_format,
@@ -272,7 +284,6 @@ static const struct v4l2_subdev_ops brx_ops = {
  */
 
 static void brx_configure_stream(struct vsp1_entity *entity,
-				 struct v4l2_subdev_state *state,
 				 struct vsp1_pipeline *pipe,
 				 struct vsp1_dl_list *dl,
 				 struct vsp1_dl_body *dlb)
@@ -282,7 +293,8 @@ static void brx_configure_stream(struct vsp1_entity *entity,
 	unsigned int flags;
 	unsigned int i;
 
-	format = v4l2_subdev_state_get_format(state, brx->entity.source_pad);
+	format = vsp1_entity_get_pad_format(&brx->entity, brx->entity.config,
+					    brx->entity.source_pad);
 
 	/*
 	 * The hardware is extremely flexible but we have no userspace API to

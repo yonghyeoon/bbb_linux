@@ -18,9 +18,8 @@
 #include <linux/kgdb.h>
 #include <asm/entry.h>
 #include <asm/setup.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <asm/kprobes.h>
-#include "unaligned.h"
 
 void die(const char *str, struct pt_regs *regs, unsigned long address)
 {
@@ -90,7 +89,7 @@ int do_misaligned_access(unsigned long address, struct pt_regs *regs,
 
 /*
  * Entry point for miscll errors such as Nested Exceptions
- *  -Duplicate TLB entry is handled separately though
+ *  -Duplicate TLB entry is handled seperately though
  */
 void do_machine_check_fault(unsigned long address, struct pt_regs *regs)
 {

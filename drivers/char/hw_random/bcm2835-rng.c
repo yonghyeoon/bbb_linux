@@ -94,10 +94,8 @@ static int bcm2835_rng_init(struct hwrng *rng)
 		return ret;
 
 	ret = reset_control_reset(priv->reset);
-	if (ret) {
-		clk_disable_unprepare(priv->clk);
+	if (ret)
 		return ret;
-	}
 
 	if (priv->mask_interrupts) {
 		/* mask the interrupt */
@@ -150,6 +148,8 @@ static int bcm2835_rng_probe(struct platform_device *pdev)
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+
+	platform_set_drvdata(pdev, priv);
 
 	/* map peripheral */
 	priv->base = devm_platform_ioremap_resource(pdev, 0);

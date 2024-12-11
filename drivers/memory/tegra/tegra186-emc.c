@@ -35,6 +35,11 @@ struct tegra186_emc {
 	struct icc_provider provider;
 };
 
+static inline struct tegra186_emc *to_tegra186_emc(struct icc_provider *provider)
+{
+	return container_of(provider, struct tegra186_emc, provider);
+}
+
 /*
  * debugfs interface
  *
@@ -231,7 +236,7 @@ static int tegra_emc_icc_set_bw(struct icc_node *src, struct icc_node *dst)
 }
 
 static struct icc_node *
-tegra_emc_of_icc_xlate(const struct of_phandle_args *spec, void *data)
+tegra_emc_of_icc_xlate(struct of_phandle_args *spec, void *data)
 {
 	struct icc_provider *provider = data;
 	struct icc_node *node;
@@ -373,7 +378,7 @@ put_bpmp:
 	return err;
 }
 
-static void tegra186_emc_remove(struct platform_device *pdev)
+static int tegra186_emc_remove(struct platform_device *pdev)
 {
 	struct tegra_mc *mc = dev_get_drvdata(pdev->dev.parent);
 	struct tegra186_emc *emc = platform_get_drvdata(pdev);
@@ -382,6 +387,8 @@ static void tegra186_emc_remove(struct platform_device *pdev)
 
 	mc->bpmp = NULL;
 	tegra_bpmp_put(emc->bpmp);
+
+	return 0;
 }
 
 static const struct of_device_id tegra186_emc_of_match[] = {
@@ -406,7 +413,7 @@ static struct platform_driver tegra186_emc_driver = {
 		.sync_state = icc_sync_state,
 	},
 	.probe = tegra186_emc_probe,
-	.remove_new = tegra186_emc_remove,
+	.remove = tegra186_emc_remove,
 };
 module_platform_driver(tegra186_emc_driver);
 

@@ -8,15 +8,25 @@
 #include <linux/slab.h>
 
 #include <asm/page.h>
+#ifdef GENERIC_TIME_VSYSCALL
 #include <vdso/datapage.h>
+#else
+#include <asm/vdso.h>
+#endif
 
 extern char vdso_start[], vdso_end[];
 
 static unsigned int vdso_pages;
 static struct page **vdso_pagelist;
 
-static union vdso_data_store vdso_data_store __page_aligned_data;
-struct vdso_data *vdso_data = vdso_data_store.data;
+/*
+ * The vDSO data page.
+ */
+static union {
+	struct vdso_data	data;
+	u8			page[PAGE_SIZE];
+} vdso_data_store __page_aligned_data;
+struct vdso_data *vdso_data = &vdso_data_store.data;
 
 static int __init vdso_init(void)
 {
@@ -45,16 +55,9 @@ arch_initcall(vdso_init);
 int arch_setup_additional_pages(struct linux_binprm *bprm,
 	int uses_interp)
 {
-	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	unsigned long vdso_base, vdso_len;
 	int ret;
-	static struct vm_special_mapping vdso_mapping = {
-		.name = "[vdso]",
-	};
-	static struct vm_special_mapping vvar_mapping = {
-		.name = "[vvar]",
-	};
 
 	vdso_len = (vdso_pages + 1) << PAGE_SHIFT;
 
@@ -72,29 +75,22 @@ int arch_setup_additional_pages(struct linux_binprm *bprm,
 	 */
 	mm->context.vdso = (void *)vdso_base;
 
-	vdso_mapping.pages = vdso_pagelist;
-	vma =
-	   _install_special_mapping(mm, vdso_base, vdso_pages << PAGE_SHIFT,
+	ret =
+	   install_special_mapping(mm, vdso_base, vdso_pages << PAGE_SHIFT,
 		(VM_READ | VM_EXEC | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC),
-		&vdso_mapping);
+		vdso_pagelist);
 
-	if (IS_ERR(vma)) {
-		ret = PTR_ERR(vma);
+	if (unlikely(ret)) {
 		mm->context.vdso = NULL;
 		goto end;
 	}
 
 	vdso_base += (vdso_pages << PAGE_SHIFT);
-	vvar_mapping.pages = &vdso_pagelist[vdso_pages];
-	vma = _install_special_mapping(mm, vdso_base, PAGE_SIZE,
-		(VM_READ | VM_MAYREAD), &vvar_mapping);
+	ret = install_special_mapping(mm, vdso_base, PAGE_SIZE,
+		(VM_READ | VM_MAYREAD), &vdso_pagelist[vdso_pages]);
 
-	if (IS_ERR(vma)) {
-		ret = PTR_ERR(vma);
+	if (unlikely(ret))
 		mm->context.vdso = NULL;
-		goto end;
-	}
-	ret = 0;
 end:
 	mmap_write_unlock(mm);
 	return ret;

@@ -254,11 +254,6 @@ static void moxart_dma_complete(void *param)
 	complete(&host->dma_complete);
 }
 
-static bool moxart_use_dma(struct moxart_host *host)
-{
-	return (host->data_len > host->fifo_width) && host->have_dma;
-}
-
 static void moxart_transfer_dma(struct mmc_data *data, struct moxart_host *host)
 {
 	u32 len, dir_slave;
@@ -296,10 +291,10 @@ static void moxart_transfer_dma(struct mmc_data *data, struct moxart_host *host)
 		dma_async_issue_pending(dma_chan);
 	}
 
+	data->bytes_xfered += host->data_remain;
+
 	wait_for_completion_interruptible_timeout(&host->dma_complete,
 						  host->timeout);
-
-	data->bytes_xfered = host->data_len;
 
 	dma_unmap_sg(dma_chan->device->dev,
 		     data->sg, data->sg_len,
@@ -380,7 +375,7 @@ static void moxart_prepare_data(struct moxart_host *host)
 	if (data->flags & MMC_DATA_WRITE)
 		datactrl |= DCR_DATA_WRITE;
 
-	if (moxart_use_dma(host))
+	if ((host->data_len > host->fifo_width) && host->have_dma)
 		datactrl |= DCR_DMA_EN;
 
 	writel(DCR_DATA_FIFO_RESET, host->base + REG_DATA_CONTROL);
@@ -412,7 +407,7 @@ static void moxart_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	moxart_send_command(host, host->mrq->cmd);
 
 	if (mrq->cmd->data) {
-		if (moxart_use_dma(host)) {
+		if ((host->data_len > host->fifo_width) && host->have_dma) {
 
 			writel(CARD_CHANGE, host->base + REG_INTERRUPT_MASK);
 

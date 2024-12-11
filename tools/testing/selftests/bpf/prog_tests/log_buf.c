@@ -5,7 +5,6 @@
 #include <bpf/btf.h>
 
 #include "test_log_buf.skel.h"
-#include "bpf_util.h"
 
 static size_t libbpf_log_pos;
 static char libbpf_log_buf[1024 * 1024];
@@ -79,7 +78,7 @@ static void obj_load_log_buf(void)
 	ASSERT_OK_PTR(strstr(libbpf_log_buf, "prog 'bad_prog': BPF program load failed"),
 		      "libbpf_log_not_empty");
 	ASSERT_OK_PTR(strstr(obj_log_buf, "DATASEC license"), "obj_log_not_empty");
-	ASSERT_OK_PTR(strstr(good_log_buf, "0: R1=ctx() R10=fp0"),
+	ASSERT_OK_PTR(strstr(good_log_buf, "0: R1=ctx(off=0,imm=0) R10=fp0"),
 		      "good_log_verbose");
 	ASSERT_OK_PTR(strstr(bad_log_buf, "invalid access to map value, value_size=16 off=16000 size=4"),
 		      "bad_log_not_empty");
@@ -144,11 +143,11 @@ static void bpf_prog_load_log_buf(void)
 		BPF_MOV64_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 	};
-	const size_t good_prog_insn_cnt = ARRAY_SIZE(good_prog_insns);
+	const size_t good_prog_insn_cnt = sizeof(good_prog_insns) / sizeof(struct bpf_insn);
 	const struct bpf_insn bad_prog_insns[] = {
 		BPF_EXIT_INSN(),
 	};
-	size_t bad_prog_insn_cnt = ARRAY_SIZE(bad_prog_insns);
+	size_t bad_prog_insn_cnt = sizeof(bad_prog_insns) / sizeof(struct bpf_insn);
 	LIBBPF_OPTS(bpf_prog_load_opts, opts);
 	const size_t log_buf_sz = 1024 * 1024;
 	char *log_buf;
@@ -160,7 +159,7 @@ static void bpf_prog_load_log_buf(void)
 	opts.log_buf = log_buf;
 	opts.log_size = log_buf_sz;
 
-	/* with log_level == 0 log_buf should stay empty for good prog */
+	/* with log_level == 0 log_buf shoud stay empty for good prog */
 	log_buf[0] = '\0';
 	opts.log_level = 0;
 	fd = bpf_prog_load(BPF_PROG_TYPE_SOCKET_FILTER, "good_prog", "GPL",
@@ -176,7 +175,7 @@ static void bpf_prog_load_log_buf(void)
 	opts.log_level = 2;
 	fd = bpf_prog_load(BPF_PROG_TYPE_SOCKET_FILTER, "good_prog", "GPL",
 			   good_prog_insns, good_prog_insn_cnt, &opts);
-	ASSERT_OK_PTR(strstr(log_buf, "0: R1=ctx() R10=fp0"), "good_log_2");
+	ASSERT_OK_PTR(strstr(log_buf, "0: R1=ctx(off=0,imm=0) R10=fp0"), "good_log_2");
 	ASSERT_GE(fd, 0, "good_fd2");
 	if (fd >= 0)
 		close(fd);
@@ -222,7 +221,7 @@ static void bpf_btf_load_log_buf(void)
 	opts.log_buf = log_buf;
 	opts.log_size = log_buf_sz;
 
-	/* with log_level == 0 log_buf should stay empty for good BTF */
+	/* with log_level == 0 log_buf shoud stay empty for good BTF */
 	log_buf[0] = '\0';
 	opts.log_level = 0;
 	fd = bpf_btf_load(raw_btf_data, raw_btf_size, &opts);

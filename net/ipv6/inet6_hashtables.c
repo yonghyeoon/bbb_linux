@@ -14,26 +14,27 @@
 #include <linux/random.h>
 
 #include <net/addrconf.h>
-#include <net/hotdata.h>
 #include <net/inet_connection_sock.h>
 #include <net/inet_hashtables.h>
 #include <net/inet6_hashtables.h>
 #include <net/secure_seq.h>
 #include <net/ip.h>
 #include <net/sock_reuseport.h>
-#include <net/tcp.h>
 
 u32 inet6_ehashfn(const struct net *net,
 		  const struct in6_addr *laddr, const u16 lport,
 		  const struct in6_addr *faddr, const __be16 fport)
 {
+	static u32 inet6_ehash_secret __read_mostly;
+	static u32 ipv6_hash_secret __read_mostly;
+
 	u32 lhash, fhash;
 
 	net_get_random_once(&inet6_ehash_secret, sizeof(inet6_ehash_secret));
-	net_get_random_once(&tcp_ipv6_hash_secret, sizeof(tcp_ipv6_hash_secret));
+	net_get_random_once(&ipv6_hash_secret, sizeof(ipv6_hash_secret));
 
 	lhash = (__force u32)laddr->s6_addr32[3];
-	fhash = __ipv6_addr_jhash(faddr, tcp_ipv6_hash_secret);
+	fhash = __ipv6_addr_jhash(faddr, ipv6_hash_secret);
 
 	return __inet6_ehashfn(lhash, lport, fhash, fport,
 			       inet6_ehash_secret + net_hash_mix(net));
@@ -46,7 +47,7 @@ EXPORT_SYMBOL_GPL(inet6_ehashfn);
  *
  * The sockhash lock must be held as a reader here.
  */
-struct sock *__inet6_lookup_established(const struct net *net,
+struct sock *__inet6_lookup_established(struct net *net,
 					struct inet_hashinfo *hashinfo,
 					   const struct in6_addr *saddr,
 					   const __be16 sport,
@@ -89,7 +90,7 @@ found:
 }
 EXPORT_SYMBOL(__inet6_lookup_established);
 
-static inline int compute_score(struct sock *sk, const struct net *net,
+static inline int compute_score(struct sock *sk, struct net *net,
 				const unsigned short hnum,
 				const struct in6_addr *daddr,
 				const int dif, const int sdif)
@@ -126,7 +127,7 @@ static inline int compute_score(struct sock *sk, const struct net *net,
  * Return: NULL if sk doesn't have SO_REUSEPORT set, otherwise a pointer to
  *         the selected sock or an error.
  */
-struct sock *inet6_lookup_reuseport(const struct net *net, struct sock *sk,
+struct sock *inet6_lookup_reuseport(struct net *net, struct sock *sk,
 				    struct sk_buff *skb, int doff,
 				    const struct in6_addr *saddr,
 				    __be16 sport,
@@ -147,7 +148,7 @@ struct sock *inet6_lookup_reuseport(const struct net *net, struct sock *sk,
 EXPORT_SYMBOL_GPL(inet6_lookup_reuseport);
 
 /* called with rcu_read_lock() */
-static struct sock *inet6_lhash2_lookup(const struct net *net,
+static struct sock *inet6_lhash2_lookup(struct net *net,
 		struct inet_listen_hashbucket *ilb2,
 		struct sk_buff *skb, int doff,
 		const struct in6_addr *saddr,
@@ -174,7 +175,7 @@ static struct sock *inet6_lhash2_lookup(const struct net *net,
 	return result;
 }
 
-struct sock *inet6_lookup_run_sk_lookup(const struct net *net,
+struct sock *inet6_lookup_run_sk_lookup(struct net *net,
 					int protocol,
 					struct sk_buff *skb, int doff,
 					const struct in6_addr *saddr,
@@ -199,7 +200,7 @@ struct sock *inet6_lookup_run_sk_lookup(const struct net *net,
 }
 EXPORT_SYMBOL_GPL(inet6_lookup_run_sk_lookup);
 
-struct sock *inet6_lookup_listener(const struct net *net,
+struct sock *inet6_lookup_listener(struct net *net,
 		struct inet_hashinfo *hashinfo,
 		struct sk_buff *skb, int doff,
 		const struct in6_addr *saddr,
@@ -243,8 +244,7 @@ done:
 }
 EXPORT_SYMBOL_GPL(inet6_lookup_listener);
 
-struct sock *inet6_lookup(const struct net *net,
-			  struct inet_hashinfo *hashinfo,
+struct sock *inet6_lookup(struct net *net, struct inet_hashinfo *hashinfo,
 			  struct sk_buff *skb, int doff,
 			  const struct in6_addr *saddr, const __be16 sport,
 			  const struct in6_addr *daddr, const __be16 dport,
@@ -291,8 +291,7 @@ static int __inet6_check_established(struct inet_timewait_death_row *death_row,
 				       dif, sdif))) {
 			if (sk2->sk_state == TCP_TIME_WAIT) {
 				tw = inet_twsk(sk2);
-				if (sk->sk_protocol == IPPROTO_TCP &&
-				    tcp_twsk_unique(sk, sk2, twp))
+				if (twsk_unique(sk, sk2, twp))
 					break;
 			}
 			goto not_unique;

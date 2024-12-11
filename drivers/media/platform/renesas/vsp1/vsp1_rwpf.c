@@ -16,8 +16,15 @@
 #define RWPF_MIN_WIDTH				1
 #define RWPF_MIN_HEIGHT				1
 
+struct v4l2_rect *vsp1_rwpf_get_crop(struct vsp1_rwpf *rwpf,
+				     struct v4l2_subdev_state *sd_state)
+{
+	return v4l2_subdev_get_try_crop(&rwpf->entity.subdev, sd_state,
+					RWPF_PAD_SINK);
+}
+
 /* -----------------------------------------------------------------------------
- * V4L2 Subdevice Operations
+ * V4L2 Subdevice Pad Operations
  */
 
 static int vsp1_rwpf_enum_mbus_code(struct v4l2_subdev *subdev,
@@ -55,14 +62,15 @@ static int vsp1_rwpf_set_format(struct v4l2_subdev *subdev,
 				struct v4l2_subdev_format *fmt)
 {
 	struct vsp1_rwpf *rwpf = to_rwpf(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
 	mutex_lock(&rwpf->entity.lock);
 
-	state = vsp1_entity_get_state(&rwpf->entity, sd_state, fmt->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&rwpf->entity, sd_state,
+					    fmt->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
@@ -73,7 +81,7 @@ static int vsp1_rwpf_set_format(struct v4l2_subdev *subdev,
 	    fmt->format.code != MEDIA_BUS_FMT_AYUV8_1X32)
 		fmt->format.code = MEDIA_BUS_FMT_AYUV8_1X32;
 
-	format = v4l2_subdev_state_get_format(state, fmt->pad);
+	format = vsp1_entity_get_pad_format(&rwpf->entity, config, fmt->pad);
 
 	if (fmt->pad == RWPF_PAD_SOURCE) {
 		/*
@@ -99,7 +107,7 @@ static int vsp1_rwpf_set_format(struct v4l2_subdev *subdev,
 		struct v4l2_rect *crop;
 
 		/* Update the sink crop rectangle. */
-		crop = v4l2_subdev_state_get_crop(state, RWPF_PAD_SINK);
+		crop = vsp1_rwpf_get_crop(rwpf, config);
 		crop->left = 0;
 		crop->top = 0;
 		crop->width = fmt->format.width;
@@ -107,7 +115,8 @@ static int vsp1_rwpf_set_format(struct v4l2_subdev *subdev,
 	}
 
 	/* Propagate the format to the source pad. */
-	format = v4l2_subdev_state_get_format(state, RWPF_PAD_SOURCE);
+	format = vsp1_entity_get_pad_format(&rwpf->entity, config,
+					    RWPF_PAD_SOURCE);
 	*format = fmt->format;
 
 	if (rwpf->flip.rotate) {
@@ -125,7 +134,7 @@ static int vsp1_rwpf_get_selection(struct v4l2_subdev *subdev,
 				   struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_rwpf *rwpf = to_rwpf(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
@@ -138,19 +147,21 @@ static int vsp1_rwpf_get_selection(struct v4l2_subdev *subdev,
 
 	mutex_lock(&rwpf->entity.lock);
 
-	state = vsp1_entity_get_state(&rwpf->entity, sd_state, sel->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&rwpf->entity, sd_state,
+					    sel->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
-		sel->r = *v4l2_subdev_state_get_crop(state, RWPF_PAD_SINK);
+		sel->r = *vsp1_rwpf_get_crop(rwpf, config);
 		break;
 
 	case V4L2_SEL_TGT_CROP_BOUNDS:
-		format = v4l2_subdev_state_get_format(state, RWPF_PAD_SINK);
+		format = vsp1_entity_get_pad_format(&rwpf->entity, config,
+						    RWPF_PAD_SINK);
 		sel->r.left = 0;
 		sel->r.top = 0;
 		sel->r.width = format->width;
@@ -172,7 +183,7 @@ static int vsp1_rwpf_set_selection(struct v4l2_subdev *subdev,
 				   struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_rwpf *rwpf = to_rwpf(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 	int ret = 0;
@@ -189,14 +200,16 @@ static int vsp1_rwpf_set_selection(struct v4l2_subdev *subdev,
 
 	mutex_lock(&rwpf->entity.lock);
 
-	state = vsp1_entity_get_state(&rwpf->entity, sd_state, sel->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&rwpf->entity, sd_state,
+					    sel->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
 	/* Make sure the crop rectangle is entirely contained in the image. */
-	format = v4l2_subdev_state_get_format(state, RWPF_PAD_SINK);
+	format = vsp1_entity_get_pad_format(&rwpf->entity, config,
+					    RWPF_PAD_SINK);
 
 	/*
 	 * Restrict the crop rectangle coordinates to multiples of 2 to avoid
@@ -216,11 +229,12 @@ static int vsp1_rwpf_set_selection(struct v4l2_subdev *subdev,
 	sel->r.height = min_t(unsigned int, sel->r.height,
 			      format->height - sel->r.top);
 
-	crop = v4l2_subdev_state_get_crop(state, RWPF_PAD_SINK);
+	crop = vsp1_rwpf_get_crop(rwpf, config);
 	*crop = sel->r;
 
 	/* Propagate the format to the source pad. */
-	format = v4l2_subdev_state_get_format(state, RWPF_PAD_SOURCE);
+	format = vsp1_entity_get_pad_format(&rwpf->entity, config,
+					    RWPF_PAD_SOURCE);
 	format->width = crop->width;
 	format->height = crop->height;
 
@@ -229,17 +243,14 @@ done:
 	return ret;
 }
 
-static const struct v4l2_subdev_pad_ops vsp1_rwpf_pad_ops = {
+const struct v4l2_subdev_pad_ops vsp1_rwpf_pad_ops = {
+	.init_cfg = vsp1_entity_init_cfg,
 	.enum_mbus_code = vsp1_rwpf_enum_mbus_code,
 	.enum_frame_size = vsp1_rwpf_enum_frame_size,
 	.get_fmt = vsp1_subdev_get_pad_format,
 	.set_fmt = vsp1_rwpf_set_format,
 	.get_selection = vsp1_rwpf_get_selection,
 	.set_selection = vsp1_rwpf_set_selection,
-};
-
-const struct v4l2_subdev_ops vsp1_rwpf_subdev_ops = {
-	.pad    = &vsp1_rwpf_pad_ops,
 };
 
 /* -----------------------------------------------------------------------------

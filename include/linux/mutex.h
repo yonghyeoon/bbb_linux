@@ -20,9 +20,6 @@
 #include <linux/osq_lock.h>
 #include <linux/debug_locks.h>
 #include <linux/cleanup.h>
-#include <linux/mutex_types.h>
-
-struct device;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname)			\
@@ -34,9 +31,54 @@ struct device;
 # define __DEP_MAP_MUTEX_INITIALIZER(lockname)
 #endif
 
+#ifndef CONFIG_PREEMPT_RT
+
+/*
+ * Simple, straightforward mutexes with strict semantics:
+ *
+ * - only one task can hold the mutex at a time
+ * - only the owner can unlock the mutex
+ * - multiple unlocks are not permitted
+ * - recursive locking is not permitted
+ * - a mutex object must be initialized via the API
+ * - a mutex object must not be initialized via memset or copying
+ * - task may not exit with mutex held
+ * - memory areas where held locks reside must not be freed
+ * - held mutexes must not be reinitialized
+ * - mutexes may not be used in hardware or software interrupt
+ *   contexts such as tasklets and timers
+ *
+ * These semantics are fully enforced when DEBUG_MUTEXES is
+ * enabled. Furthermore, besides enforcing the above rules, the mutex
+ * debugging code also implements a number of additional features
+ * that make lock debugging easier and faster:
+ *
+ * - uses symbolic names of mutexes, whenever they are printed in debug output
+ * - point-of-acquire tracking, symbolic lookup of function names
+ * - list of all locks held in the system, printout of them
+ * - owner tracking
+ * - detects self-recursing locks and prints out all relevant info
+ * - detects multi-task circular deadlocks and prints out all affected
+ *   locks and tasks (and only those tasks)
+ */
+struct mutex {
+	atomic_long_t		owner;
+	raw_spinlock_t		wait_lock;
+#ifdef CONFIG_MUTEX_SPIN_ON_OWNER
+	struct optimistic_spin_queue osq; /* Spinner MCS lock */
+#endif
+	struct list_head	wait_list;
+#ifdef CONFIG_DEBUG_MUTEXES
+	void			*magic;
+#endif
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map	dep_map;
+#endif
+};
+
 #ifdef CONFIG_DEBUG_MUTEXES
 
-# define __DEBUG_MUTEX_INITIALIZER(lockname)				\
+#define __DEBUG_MUTEX_INITIALIZER(lockname)				\
 	, .magic = &lockname
 
 extern void mutex_destroy(struct mutex *lock);
@@ -64,18 +106,6 @@ do {									\
 	__mutex_init((mutex), #mutex, &__key);				\
 } while (0)
 
-/**
- * mutex_init_with_key - initialize a mutex with a given lockdep key
- * @mutex: the mutex to be initialized
- * @key: the lockdep key to be associated with the mutex
- *
- * Initialize the mutex to the unlocked state.
- *
- * It is not allowed to initialize an already locked mutex.
- */
-#define mutex_init_with_key(mutex, key) __mutex_init((mutex), #mutex, (key))
-
-#ifndef CONFIG_PREEMPT_RT
 #define __MUTEX_INITIALIZER(lockname) \
 		{ .owner = ATOMIC_LONG_INIT(0) \
 		, .wait_lock = __RAW_SPIN_LOCK_UNLOCKED(lockname.wait_lock) \
@@ -101,6 +131,14 @@ extern bool mutex_is_locked(struct mutex *lock);
 /*
  * Preempt-RT variant based on rtmutexes.
  */
+#include <linux/rtmutex.h>
+
+struct mutex {
+	struct rt_mutex_base	rtmutex;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map	dep_map;
+#endif
+};
 
 #define __MUTEX_INITIALIZER(mutexname)					\
 {									\
@@ -113,6 +151,9 @@ extern bool mutex_is_locked(struct mutex *lock);
 
 extern void __mutex_rt_init(struct mutex *lock, const char *name,
 			    struct lock_class_key *key);
+extern int mutex_trylock(struct mutex *lock);
+
+static inline void mutex_destroy(struct mutex *lock) { }
 
 #define mutex_is_locked(l)	rt_mutex_base_is_locked(&(l)->rtmutex)
 
@@ -122,32 +163,13 @@ do {							\
 	__mutex_rt_init((mutex), name, key);		\
 } while (0)
 
-#endif /* CONFIG_PREEMPT_RT */
-
-#ifdef CONFIG_DEBUG_MUTEXES
-
-int __devm_mutex_init(struct device *dev, struct mutex *lock);
-
-#else
-
-static inline int __devm_mutex_init(struct device *dev, struct mutex *lock)
-{
-	/*
-	 * When CONFIG_DEBUG_MUTEXES is off mutex_destroy() is just a nop so
-	 * no really need to register it in the devm subsystem.
-	 */
-	return 0;
-}
-
-#endif
-
-#define devm_mutex_init(dev, mutex)			\
-({							\
-	typeof(mutex) mutex_ = (mutex);			\
+#define mutex_init(mutex)				\
+do {							\
+	static struct lock_class_key __key;		\
 							\
-	mutex_init(mutex_);				\
-	__devm_mutex_init(dev, mutex_);			\
-})
+	__mutex_init((mutex), #mutex, &__key);		\
+} while (0)
+#endif /* CONFIG_PREEMPT_RT */
 
 /*
  * See kernel/locking/mutex.c for detailed documentation of these APIs.
@@ -199,7 +221,6 @@ extern void mutex_unlock(struct mutex *lock);
 extern int atomic_dec_and_mutex_lock(atomic_t *cnt, struct mutex *lock);
 
 DEFINE_GUARD(mutex, struct mutex *, mutex_lock(_T), mutex_unlock(_T))
-DEFINE_GUARD_COND(mutex, _try, mutex_trylock(_T))
-DEFINE_GUARD_COND(mutex, _intr, mutex_lock_interruptible(_T) == 0)
+DEFINE_FREE(mutex, struct mutex *, if (_T) mutex_unlock(_T))
 
 #endif /* __LINUX_MUTEX_H */

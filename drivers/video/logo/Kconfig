@@ -8,8 +8,6 @@ menuconfig LOGO
 	depends on FB_CORE || SGI_NEWPORT_CONSOLE
 	help
 	  Enable and select frame buffer bootup logos.
-	  Monochrome logos will also be used by the DRM panic handler, if
-	  enabled.
 
 if LOGO
 
@@ -28,6 +26,10 @@ config LOGO_LINUX_VGA16
 
 config LOGO_LINUX_CLUT224
 	bool "Standard 224-color Linux logo"
+	default y
+
+config LOGO_BEAGLE_CLUT224
+	bool "224-color Linux logo with BeagleBoard.org mascot Boris"
 	default y
 
 config LOGO_DEC_CLUT224

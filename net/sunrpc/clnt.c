@@ -48,7 +48,12 @@
 # define RPCDBG_FACILITY	RPCDBG_CALL
 #endif
 
+/*
+ * All RPC clients are linked into this list
+ */
+
 static DECLARE_WAIT_QUEUE_HEAD(destroy_wait);
+
 
 static void	call_start(struct rpc_task *task);
 static void	call_reserve(struct rpc_task *task);
@@ -282,14 +287,8 @@ static struct rpc_xprt *rpc_clnt_set_transport(struct rpc_clnt *clnt,
 
 static void rpc_clnt_set_nodename(struct rpc_clnt *clnt, const char *nodename)
 {
-	ssize_t copied;
-
-	copied = strscpy(clnt->cl_nodename,
-			 nodename, sizeof(clnt->cl_nodename));
-
-	clnt->cl_nodelen = copied < 0
-				? sizeof(clnt->cl_nodename) - 1
-				: copied;
+	clnt->cl_nodelen = strlcpy(clnt->cl_nodename,
+			nodename, sizeof(clnt->cl_nodename));
 }
 
 static int rpc_client_register(struct rpc_clnt *clnt,
@@ -541,7 +540,7 @@ struct rpc_clnt *rpc_create(struct rpc_create_args *args)
 		.connect_timeout = args->connect_timeout,
 		.reconnect_timeout = args->reconnect_timeout,
 	};
-	char servername[RPC_MAXNETNAMELEN];
+	char servername[48];
 	struct rpc_clnt *clnt;
 	int i;
 
@@ -800,24 +799,15 @@ out_revert:
 }
 EXPORT_SYMBOL_GPL(rpc_switch_client_transport);
 
-static struct rpc_xprt_switch *rpc_clnt_xprt_switch_get(struct rpc_clnt *clnt)
-{
-	struct rpc_xprt_switch *xps;
-
-	rcu_read_lock();
-	xps = xprt_switch_get(rcu_dereference(clnt->cl_xpi.xpi_xpswitch));
-	rcu_read_unlock();
-
-	return xps;
-}
-
 static
 int _rpc_clnt_xprt_iter_init(struct rpc_clnt *clnt, struct rpc_xprt_iter *xpi,
 			     void func(struct rpc_xprt_iter *xpi, struct rpc_xprt_switch *xps))
 {
 	struct rpc_xprt_switch *xps;
 
-	xps = rpc_clnt_xprt_switch_get(clnt);
+	rcu_read_lock();
+	xps = xprt_switch_get(rcu_dereference(clnt->cl_xpi.xpi_xpswitch));
+	rcu_read_unlock();
 	if (xps == NULL)
 		return -EAGAIN;
 	func(xpi, xps);
@@ -1066,7 +1056,6 @@ struct rpc_clnt *rpc_bind_new_program(struct rpc_clnt *old,
 		.authflavor	= old->cl_auth->au_flavor,
 		.cred		= old->cl_cred,
 		.stats		= old->cl_stats,
-		.timeout	= old->cl_timeout,
 	};
 	struct rpc_clnt *clnt;
 	int err;
@@ -1316,10 +1305,8 @@ static void call_bc_encode(struct rpc_task *task);
  * rpc_run_bc_task - Allocate a new RPC task for backchannel use, then run
  * rpc_execute against it
  * @req: RPC request
- * @timeout: timeout values to use for this task
  */
-struct rpc_task *rpc_run_bc_task(struct rpc_rqst *req,
-		struct rpc_timeout *timeout)
+struct rpc_task *rpc_run_bc_task(struct rpc_rqst *req)
 {
 	struct rpc_task *task;
 	struct rpc_task_setup task_setup_data = {
@@ -1338,7 +1325,7 @@ struct rpc_task *rpc_run_bc_task(struct rpc_rqst *req,
 		return task;
 	}
 
-	xprt_init_bc_request(req, task, timeout);
+	xprt_init_bc_request(req, task);
 
 	task->tk_action = call_bc_encode;
 	atomic_inc(&task->tk_count);
@@ -1888,6 +1875,12 @@ call_allocate(struct rpc_task *task)
 	if (req->rq_buffer)
 		return;
 
+	if (proc->p_proc != 0) {
+		BUG_ON(proc->p_arglen == 0);
+		if (proc->p_decode != NULL)
+			BUG_ON(proc->p_replen == 0);
+	}
+
 	/*
 	 * Calculate the size (in quads) of the RPC call
 	 * and reply headers, and convert both values
@@ -2216,7 +2209,9 @@ call_connect_status(struct rpc_task *task)
 			struct rpc_xprt *saved = task->tk_xprt;
 			struct rpc_xprt_switch *xps;
 
-			xps = rpc_clnt_xprt_switch_get(clnt);
+			rcu_read_lock();
+			xps = xprt_switch_get(rcu_dereference(clnt->cl_xpi.xpi_xpswitch));
+			rcu_read_unlock();
 			if (xps->xps_nxprts > 1) {
 				long value;
 
@@ -2231,7 +2226,7 @@ call_connect_status(struct rpc_task *task)
 			}
 			xprt_switch_put(xps);
 			if (!task->tk_xprt)
-				goto out;
+				return;
 		}
 		goto out_retry;
 	case -ENOBUFS:
@@ -2246,7 +2241,6 @@ out_next:
 out_retry:
 	/* Check for timeouts before looping back to call_bind */
 	task->tk_action = call_bind;
-out:
 	rpc_check_timeout(task);
 }
 
@@ -2315,13 +2309,12 @@ call_transmit_status(struct rpc_task *task)
 		task->tk_action = call_transmit;
 		task->tk_status = 0;
 		break;
+	case -ECONNREFUSED:
 	case -EHOSTDOWN:
 	case -ENETDOWN:
 	case -EHOSTUNREACH:
 	case -ENETUNREACH:
 	case -EPERM:
-		break;
-	case -ECONNREFUSED:
 		if (RPC_IS_SOFTCONN(task)) {
 			if (!task->tk_msg.rpc_proc->p_proc)
 				trace_xprt_ping(task->tk_xprt,
@@ -2689,19 +2682,8 @@ rpc_decode_header(struct rpc_task *task, struct xdr_stream *xdr)
 		goto out_msg_denied;
 
 	error = rpcauth_checkverf(task, xdr);
-	if (error) {
-		struct rpc_cred *cred = task->tk_rqstp->rq_cred;
-
-		if (!test_bit(RPCAUTH_CRED_UPTODATE, &cred->cr_flags)) {
-			rpcauth_invalcred(task);
-			if (!task->tk_cred_retry)
-				goto out_err;
-			task->tk_cred_retry--;
-			trace_rpc__stale_creds(task);
-			return -EKEYREJECTED;
-		}
+	if (error)
 		goto out_verifier;
-	}
 
 	p = xdr_inline_decode(xdr, sizeof(*p));
 	if (!p)
@@ -3136,6 +3118,7 @@ static int rpc_xprt_probe_trunked(struct rpc_clnt *clnt,
 				  struct rpc_xprt *xprt,
 				  struct rpc_add_xprt_test *data)
 {
+	struct rpc_xprt_switch *xps;
 	struct rpc_xprt *main_xprt;
 	int status = 0;
 
@@ -3143,6 +3126,7 @@ static int rpc_xprt_probe_trunked(struct rpc_clnt *clnt,
 
 	rcu_read_lock();
 	main_xprt = xprt_get(rcu_dereference(clnt->cl_xprt));
+	xps = xprt_switch_get(rcu_dereference(clnt->cl_xpi.xpi_xpswitch));
 	status = rpc_cmp_addr_port((struct sockaddr *)&xprt->addr,
 				   (struct sockaddr *)&main_xprt->addr);
 	rcu_read_unlock();
@@ -3153,6 +3137,7 @@ static int rpc_xprt_probe_trunked(struct rpc_clnt *clnt,
 	status = rpc_clnt_add_xprt_helper(clnt, xprt, data);
 out:
 	xprt_put(xprt);
+	xprt_switch_put(xps);
 	return status;
 }
 
@@ -3267,27 +3252,34 @@ rpc_set_connect_timeout(struct rpc_clnt *clnt,
 }
 EXPORT_SYMBOL_GPL(rpc_set_connect_timeout);
 
+void rpc_clnt_xprt_switch_put(struct rpc_clnt *clnt)
+{
+	rcu_read_lock();
+	xprt_switch_put(rcu_dereference(clnt->cl_xpi.xpi_xpswitch));
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(rpc_clnt_xprt_switch_put);
+
 void rpc_clnt_xprt_set_online(struct rpc_clnt *clnt, struct rpc_xprt *xprt)
 {
 	struct rpc_xprt_switch *xps;
 
-	xps = rpc_clnt_xprt_switch_get(clnt);
+	rcu_read_lock();
+	xps = rcu_dereference(clnt->cl_xpi.xpi_xpswitch);
+	rcu_read_unlock();
 	xprt_set_online_locked(xprt, xps);
-	xprt_switch_put(xps);
 }
 
 void rpc_clnt_xprt_switch_add_xprt(struct rpc_clnt *clnt, struct rpc_xprt *xprt)
 {
-	struct rpc_xprt_switch *xps;
-
 	if (rpc_clnt_xprt_switch_has_addr(clnt,
 		(const struct sockaddr *)&xprt->addr)) {
 		return rpc_clnt_xprt_set_online(clnt, xprt);
 	}
-
-	xps = rpc_clnt_xprt_switch_get(clnt);
-	rpc_xprt_switch_add_xprt(xps, xprt);
-	xprt_switch_put(xps);
+	rcu_read_lock();
+	rpc_xprt_switch_add_xprt(rcu_dereference(clnt->cl_xpi.xpi_xpswitch),
+				 xprt);
+	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(rpc_clnt_xprt_switch_add_xprt);
 

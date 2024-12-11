@@ -19,7 +19,7 @@
 #include <scsi/scsi_tcq.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "tcm.h"
 #include "u_tcm.h"
@@ -1504,8 +1504,8 @@ static ssize_t tcm_usbg_tpg_nexus_show(struct config_item *item, char *page)
 		ret = -ENODEV;
 		goto out;
 	}
-	ret = sysfs_emit(page, "%s\n",
-			 tv_nexus->tvn_se_sess->se_node_acl->initiatorname);
+	ret = snprintf(page, PAGE_SIZE, "%s\n",
+			tv_nexus->tvn_se_sess->se_node_acl->initiatorname);
 out:
 	mutex_unlock(&tpg->tpg_mutex);
 	return ret;
@@ -1687,9 +1687,6 @@ static const struct target_core_fabric_ops usbg_ops = {
 
 	.tfc_wwn_attrs			= usbg_wwn_attrs,
 	.tfc_tpg_base_attrs		= usbg_base_attrs,
-
-	.default_submit_type		= TARGET_DIRECT_SUBMIT,
-	.direct_submit_supp		= 1,
 };
 
 /* Start gadget.c code */
@@ -2301,6 +2298,5 @@ static void __exit tcm_exit(void)
 }
 module_exit(tcm_exit);
 
-MODULE_DESCRIPTION("Target based USB-Gadget");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sebastian Andrzej Siewior");

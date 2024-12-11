@@ -119,6 +119,8 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 	struct clk *clk;
 	struct device_node *node;
 	struct mfd_cell *cell;
+	struct property *prop;
+	const __be32 *cur;
 	bool use_tsc = false, use_mag = false;
 	u32 val;
 	int err;
@@ -165,7 +167,7 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 	}
 
 	node = of_get_child_by_name(pdev->dev.of_node, "adc");
-	of_property_for_each_u32(node, "ti,adc-channels", val) {
+	of_property_for_each_u32(node, "ti,adc-channels", prop, cur, val) {
 		adc_channels++;
 		if (val > 7) {
 			dev_err(&pdev->dev, " PIN numbers are 0..7 (not %d)\n",
@@ -296,7 +298,7 @@ err_disable_clk:
 	return err;
 }
 
-static void ti_tscadc_remove(struct platform_device *pdev)
+static int ti_tscadc_remove(struct platform_device *pdev)
 {
 	struct ti_tscadc_dev *tscadc = platform_get_drvdata(pdev);
 
@@ -306,6 +308,8 @@ static void ti_tscadc_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	mfd_remove_devices(tscadc->dev);
+
+	return 0;
 }
 
 static int __maybe_unused ti_tscadc_can_wakeup(struct device *dev, void *data)
@@ -377,7 +381,7 @@ static struct platform_driver ti_tscadc_driver = {
 		.of_match_table = ti_tscadc_dt_ids,
 	},
 	.probe	= ti_tscadc_probe,
-	.remove_new = ti_tscadc_remove,
+	.remove	= ti_tscadc_remove,
 
 };
 

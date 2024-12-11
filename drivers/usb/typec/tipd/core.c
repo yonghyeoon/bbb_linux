@@ -150,6 +150,11 @@ static enum power_supply_property tps6598x_psy_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
 
+static enum power_supply_usb_type tps6598x_psy_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_C,
+	POWER_SUPPLY_USB_TYPE_PD,
+};
+
 static const char *tps6598x_psy_name_prefix = "tps6598x-source-psy-";
 
 /*
@@ -600,11 +605,11 @@ static irqreturn_t tps25750_interrupt(int irq, void *data)
 	if (!tps6598x_read_status(tps, &status))
 		goto err_clear_ints;
 
-	if (event[0] & TPS_REG_INT_POWER_STATUS_UPDATE)
+	if ((event[0] | event[1]) & TPS_REG_INT_POWER_STATUS_UPDATE)
 		if (!tps6598x_read_power_status(tps))
 			goto err_clear_ints;
 
-	if (event[0] & TPS_REG_INT_DATA_STATUS_UPDATE)
+	if ((event[0] | event[1]) & TPS_REG_INT_DATA_STATUS_UPDATE)
 		if (!tps6598x_read_data_status(tps))
 			goto err_clear_ints;
 
@@ -613,7 +618,7 @@ static irqreturn_t tps25750_interrupt(int irq, void *data)
 	 * a plug event. Therefore, we need to check
 	 * for pr/dr status change to set TypeC dr/pr accordingly.
 	 */
-	if (event[0] & TPS_REG_INT_PLUG_EVENT ||
+	if ((event[0] | event[1]) & TPS_REG_INT_PLUG_EVENT ||
 	    tps6598x_has_role_changed(tps, status))
 		tps6598x_handle_plug_event(tps, status);
 
@@ -822,8 +827,8 @@ static int devm_tps6598_psy_register(struct tps6598x *tps)
 
 	tps->psy_desc.name = psy_name;
 	tps->psy_desc.type = POWER_SUPPLY_TYPE_USB;
-	tps->psy_desc.usb_types = BIT(POWER_SUPPLY_USB_TYPE_C) |
-				  BIT(POWER_SUPPLY_USB_TYPE_PD);
+	tps->psy_desc.usb_types = tps6598x_psy_usb_types;
+	tps->psy_desc.num_usb_types = ARRAY_SIZE(tps6598x_psy_usb_types);
 	tps->psy_desc.properties = tps6598x_psy_props;
 	tps->psy_desc.num_properties = ARRAY_SIZE(tps6598x_psy_props);
 	tps->psy_desc.get_property = tps6598x_psy_get_prop;
@@ -887,19 +892,19 @@ tps6598x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 	return 0;
 }
 
-static int tps_request_firmware(struct tps6598x *tps, const struct firmware **fw,
-				const char **firmware_name)
+static int tps_request_firmware(struct tps6598x *tps, const struct firmware **fw)
 {
+	const char *firmware_name;
 	int ret;
 
 	ret = device_property_read_string(tps->dev, "firmware-name",
-					  firmware_name);
+					  &firmware_name);
 	if (ret)
 		return ret;
 
-	ret = request_firmware(fw, *firmware_name, tps->dev);
+	ret = request_firmware(fw, firmware_name, tps->dev);
 	if (ret) {
-		dev_err(tps->dev, "failed to retrieve \"%s\"\n", *firmware_name);
+		dev_err(tps->dev, "failed to retrieve \"%s\"\n", firmware_name);
 		return ret;
 	}
 
@@ -994,7 +999,12 @@ static int tps25750_start_patch_burst_mode(struct tps6598x *tps)
 	u32 addr;
 	struct device_node *np = tps->dev->of_node;
 
-	ret = tps_request_firmware(tps, &fw, &firmware_name);
+	ret = device_property_read_string(tps->dev, "firmware-name",
+					  &firmware_name);
+	if (ret)
+		return ret;
+
+	ret = tps_request_firmware(tps, &fw);
 	if (ret)
 		return ret;
 
@@ -1145,7 +1155,12 @@ static int tps6598x_apply_patch(struct tps6598x *tps)
 	const char *firmware_name;
 	int ret;
 
-	ret = tps_request_firmware(tps, &fw, &firmware_name);
+	ret = device_property_read_string(tps->dev, "firmware-name",
+					  &firmware_name);
+	if (ret)
+		return ret;
+
+	ret = tps_request_firmware(tps, &fw);
 	if (ret)
 		return ret;
 
@@ -1160,7 +1175,10 @@ static int tps6598x_apply_patch(struct tps6598x *tps)
 
 	bytes_left = fw->size;
 	while (bytes_left) {
-		in_len = min(bytes_left, TPS_MAX_LEN);
+		if (bytes_left < TPS_MAX_LEN)
+			in_len = bytes_left;
+		else
+			in_len = TPS_MAX_LEN;
 		ret = tps6598x_exec_cmd(tps, "PTCd", in_len,
 					fw->data + copied_bytes,
 					TPS_PTCD_OUT_BYTES, out);
@@ -1186,14 +1204,10 @@ static int tps6598x_apply_patch(struct tps6598x *tps)
 	dev_info(tps->dev, "Firmware update succeeded\n");
 
 release_fw:
-	if (ret) {
-		dev_err(tps->dev, "Failed to write patch %s of %zu bytes\n",
-			firmware_name, fw->size);
-	}
 	release_firmware(fw);
 
 	return ret;
-}
+};
 
 static int cd321x_init(struct tps6598x *tps)
 {
@@ -1351,7 +1365,10 @@ static int tps6598x_probe(struct i2c_client *client)
 			TPS_REG_INT_PLUG_EVENT;
 	}
 
-	tps->data = i2c_get_match_data(client);
+	if (dev_fwnode(tps->dev))
+		tps->data = device_get_match_data(tps->dev);
+	else
+		tps->data = i2c_get_match_data(client);
 	if (!tps->data)
 		return -EINVAL;
 
@@ -1460,9 +1477,8 @@ static void tps6598x_remove(struct i2c_client *client)
 
 	if (!client->irq)
 		cancel_delayed_work_sync(&tps->wq_poll);
-	else
-		devm_free_irq(tps->dev, client->irq, tps);
 
+	devm_free_irq(tps->dev, client->irq, tps);
 	tps6598x_disconnect(tps, 0);
 	typec_unregister_port(tps->port);
 	usb_role_switch_put(tps->role_sw);

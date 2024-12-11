@@ -54,6 +54,8 @@ struct udma_static_tr {
 #define UDMA_RFLOW_DSTTAG_DST_TAG_LO	4
 #define UDMA_RFLOW_DSTTAG_DST_TAG_HI	5
 
+#define UDMA_J722S_BCDMA_PSIL_BASE		0x3100
+
 struct udma_chan;
 
 enum k3_dma_type {
@@ -135,6 +137,7 @@ struct udma_match_data {
 	u32 statictr_z_mask;
 	u8 burst_size[3];
 	struct udma_soc_data *soc_data;
+	u8 order_id;
 };
 
 struct udma_soc_data {
@@ -2110,6 +2113,7 @@ static int udma_tisci_rx_channel_config(struct udma_chan *uc)
 static int bcdma_tisci_rx_channel_config(struct udma_chan *uc)
 {
 	struct udma_dev *ud = uc->ud;
+	const struct udma_match_data *match_data = ud->match_data;
 	struct udma_tisci_rm *tisci_rm = &ud->tisci_rm;
 	const struct ti_sci_rm_udmap_ops *tisci_ops = tisci_rm->tisci_udmap_ops;
 	struct udma_rchan *rchan = uc->rchan;
@@ -2119,6 +2123,11 @@ static int bcdma_tisci_rx_channel_config(struct udma_chan *uc)
 	req_rx.valid_params = TISCI_BCDMA_RCHAN_VALID_PARAMS;
 	req_rx.nav_id = tisci_rm->tisci_dev_id;
 	req_rx.index = rchan->id;
+
+	if (match_data->order_id) {
+		req_rx.valid_params |= TI_SCI_MSG_VALUE_RM_UDMAP_CH_ORDER_ID_VALID;
+		req_rx.rx_orderid = match_data->order_id;
+	}
 
 	ret = tisci_ops->rx_ch_cfg(tisci_rm->tisci, &req_rx);
 	if (ret)
@@ -3199,13 +3208,12 @@ static int udma_configure_statictr(struct udma_chan *uc, struct udma_desc *d,
 		else
 			d->static_tr.bstcnt = d->residue / div;
 	} else if (uc->ud->match_data->type == DMA_TYPE_BCDMA &&
-		   uc->config.dir == DMA_DEV_TO_MEM &&
+		   uc->config.dir == DMA_DEV_TO_MEM && !uc->config.pkt_mode &&
 		   uc->cyclic) {
 		/*
-		 * For cyclic mode with BCDMA we have to set EOP in each TR to
-		 * prevent short packet errors seen on channel teardown. So the
-		 * PDMA must close the packet after every TR transfer by setting
-		 * burst count equal to the number of bytes transferred.
+		 * For cyclic TR mode PDMA must close the packet after every TR
+		 * transfer, as we have to set EOP in each TR to prevent short
+		 * packet errors seen on channel teardown.
 		 */
 		struct cppi5_tr_type1_t *tr_req = d->hwdesc[0].tr_req_base;
 
@@ -4364,6 +4372,20 @@ static struct udma_match_data am62a_bcdma_csirx_data = {
 		0, /* No UH Channels */
 	},
 	.soc_data = &am62a_dmss_csi_soc_data,
+	.order_id = 8,
+};
+
+static struct udma_match_data j722s_bcdma_data = {
+	.type = DMA_TYPE_BCDMA,
+	.psil_base = UDMA_J722S_BCDMA_PSIL_BASE,
+	.enable_memcpy_support = false,
+	.burst_size = {
+		TI_SCI_RM_UDMAP_CHAN_BURST_SIZE_64_BYTES, /* Normal Channels */
+		0, /* No H Channels */
+		0, /* No UH Channels */
+	},
+	.soc_data = &j721s2_bcdma_csi_soc_data,
+	.order_id = 15,
 };
 
 static struct udma_match_data am64_bcdma_data = {
@@ -4402,6 +4424,7 @@ static struct udma_match_data j721s2_bcdma_csi_data = {
 		0, /* No UH Channels */
 	},
 	.soc_data = &j721s2_bcdma_csi_soc_data,
+	.order_id = 15,
 };
 
 static const struct of_device_id udma_of_match[] = {
@@ -4435,9 +4458,12 @@ static const struct of_device_id udma_of_match[] = {
 		.compatible = "ti,j721s2-dmss-bcdma-csi",
 		.data = &j721s2_bcdma_csi_data,
 	},
+	{
+		.compatible = "ti,j722s-dmss-bcdma-csi",
+		.data = &j722s_bcdma_data,
+	},
 	{ /* Sentinel */ },
 };
-MODULE_DEVICE_TABLE(of, udma_of_match);
 
 static struct udma_soc_data am654_soc_data = {
 	.oes = {
@@ -4505,9 +4531,8 @@ static int udma_get_mmrs(struct platform_device *pdev, struct udma_dev *ud)
 		ud->rchan_cnt = UDMA_CAP2_RCHAN_CNT(cap2);
 		break;
 	case DMA_TYPE_BCDMA:
-		ud->bchan_cnt = BCDMA_CAP2_BCHAN_CNT(cap2) +
-				BCDMA_CAP3_HBCHAN_CNT(cap3) +
-				BCDMA_CAP3_UBCHAN_CNT(cap3);
+		ud->bchan_cnt = BCDMA_CAP2_BCHAN_CNT(cap2);
+		ud->bchan_cnt += BCDMA_CAP3_HBCHAN_CNT(cap3) + BCDMA_CAP3_UBCHAN_CNT(cap3);
 		ud->tchan_cnt = BCDMA_CAP2_TCHAN_CNT(cap2);
 		ud->rchan_cnt = BCDMA_CAP2_RCHAN_CNT(cap2);
 		ud->rflow_cnt = ud->rchan_cnt;
@@ -5656,7 +5681,6 @@ static struct platform_driver udma_driver = {
 };
 
 module_platform_driver(udma_driver);
-MODULE_DESCRIPTION("Texas Instruments UDMA support");
 MODULE_LICENSE("GPL v2");
 
 /* Private interfaces to UDMA */

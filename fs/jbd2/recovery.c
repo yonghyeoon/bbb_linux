@@ -19,7 +19,6 @@
 #include <linux/errno.h>
 #include <linux/crc32.h>
 #include <linux/blkdev.h>
-#include <linux/string_choices.h>
 #endif
 
 /*
@@ -290,6 +289,8 @@ int jbd2_journal_recover(journal_t *journal)
 	journal_superblock_t *	sb;
 
 	struct recovery_info	info;
+	errseq_t		wb_err;
+	struct address_space	*mapping;
 
 	memset(&info, 0, sizeof(info));
 	sb = journal->j_superblock;
@@ -307,6 +308,9 @@ int jbd2_journal_recover(journal_t *journal)
 		return 0;
 	}
 
+	wb_err = 0;
+	mapping = journal->j_fs_dev->bd_inode->i_mapping;
+	errseq_check_and_advance(&mapping->wb_err, &wb_err);
 	err = do_one_pass(journal, &info, PASS_SCAN);
 	if (!err)
 		err = do_one_pass(journal, &info, PASS_REVOKE);
@@ -330,7 +334,7 @@ int jbd2_journal_recover(journal_t *journal)
 	err2 = sync_blockdev(journal->j_fs_dev);
 	if (!err)
 		err = err2;
-	err2 = jbd2_check_fs_dev_write_error(journal);
+	err2 = errseq_check_and_advance(&mapping->wb_err, &wb_err);
 	if (!err)
 		err = err2;
 	/* Make sure all replayed data is on permanent storage */
@@ -375,7 +379,7 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 			be32_to_cpu(journal->j_superblock->s_sequence);
 		jbd2_debug(1,
 			  "JBD2: ignoring %d transaction%s from the journal.\n",
-			  dropped, str_plural(dropped));
+			  dropped, (dropped == 1) ? "" : "s");
 #endif
 		journal->j_transaction_sequence = ++info.end_transaction;
 		journal->j_head = info.head_block;
@@ -440,27 +444,6 @@ static int jbd2_commit_block_csum_verify(journal_t *j, void *buf)
 	h->h_chksum[0] = 0;
 	calculated = jbd2_chksum(j, j->j_csum_seed, buf, j->j_blocksize);
 	h->h_chksum[0] = provided;
-
-	return provided == cpu_to_be32(calculated);
-}
-
-static bool jbd2_commit_block_csum_verify_partial(journal_t *j, void *buf)
-{
-	struct commit_header *h;
-	__be32 provided;
-	__u32 calculated;
-	void *tmpbuf;
-
-	tmpbuf = kzalloc(j->j_blocksize, GFP_KERNEL);
-	if (!tmpbuf)
-		return false;
-
-	memcpy(tmpbuf, buf, sizeof(struct commit_header));
-	h = tmpbuf;
-	provided = h->h_chksum[0];
-	h->h_chksum[0] = 0;
-	calculated = jbd2_chksum(j, j->j_csum_seed, tmpbuf, j->j_blocksize);
-	kfree(tmpbuf);
 
 	return provided == cpu_to_be32(calculated);
 }
@@ -657,7 +640,7 @@ static int do_one_pass(journal_t *journal,
 					success = err;
 					printk(KERN_ERR
 						"JBD2: IO error %d recovering "
-						"block %lu in log\n",
+						"block %ld in log\n",
 						err, io_block);
 				} else {
 					unsigned long long blocknr;
@@ -686,8 +669,7 @@ static int do_one_pass(journal_t *journal,
 						printk(KERN_ERR "JBD2: Invalid "
 						       "checksum recovering "
 						       "data block %llu in "
-						       "journal block %lu\n",
-						       blocknr, io_block);
+						       "log\n", blocknr);
 						block_error = 1;
 						goto skip_write;
 					}
@@ -832,13 +814,6 @@ static int do_one_pass(journal_t *journal,
 			if (pass == PASS_SCAN &&
 			    !jbd2_commit_block_csum_verify(journal,
 							   bh->b_data)) {
-				if (jbd2_commit_block_csum_verify_partial(
-								  journal,
-								  bh->b_data)) {
-					pr_notice("JBD2: Find incomplete commit block in transaction %u block %lu\n",
-						  next_commit_ID, next_log_block);
-					goto chksum_ok;
-				}
 			chksum_error:
 				if (commit_time < last_trans_commit_time)
 					goto ignore_crc_mismatch;
@@ -853,7 +828,6 @@ static int do_one_pass(journal_t *journal,
 				}
 			}
 			if (pass == PASS_SCAN) {
-			chksum_ok:
 				last_trans_commit_time = commit_time;
 				head_block = next_log_block;
 			}
@@ -873,7 +847,6 @@ static int do_one_pass(journal_t *journal,
 					  next_log_block);
 				need_check_commit_time = true;
 			}
-
 			/* If we aren't in the REVOKE pass, then we can
 			 * just skip over this block. */
 			if (pass != PASS_REVOKE) {

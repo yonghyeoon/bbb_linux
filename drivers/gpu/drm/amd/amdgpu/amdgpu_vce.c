@@ -158,7 +158,7 @@ int amdgpu_vce_sw_init(struct amdgpu_device *adev, unsigned long size)
 		return -EINVAL;
 	}
 
-	r = amdgpu_ucode_request(adev, &adev->vce.fw, "%s", fw_name);
+	r = amdgpu_ucode_request(adev, &adev->vce.fw, fw_name);
 	if (r) {
 		dev_err(adev->dev, "amdgpu_vce: Can't validate firmware \"%s\"\n",
 			fw_name);
@@ -230,22 +230,21 @@ int amdgpu_vce_sw_fini(struct amdgpu_device *adev)
  * amdgpu_vce_entity_init - init entity
  *
  * @adev: amdgpu_device pointer
- * @ring: amdgpu_ring pointer to check
  *
- * Initialize the entity used for handle management in the kernel driver.
  */
-int amdgpu_vce_entity_init(struct amdgpu_device *adev, struct amdgpu_ring *ring)
+int amdgpu_vce_entity_init(struct amdgpu_device *adev)
 {
-	if (ring == &adev->vce.ring[0]) {
-		struct drm_gpu_scheduler *sched = &ring->sched;
-		int r;
+	struct amdgpu_ring *ring;
+	struct drm_gpu_scheduler *sched;
+	int r;
 
-		r = drm_sched_entity_init(&adev->vce.entity, DRM_SCHED_PRIORITY_NORMAL,
-					  &sched, 1, NULL);
-		if (r != 0) {
-			DRM_ERROR("Failed setting up VCE run queue.\n");
-			return r;
-		}
+	ring = &adev->vce.ring[0];
+	sched = &ring->sched;
+	r = drm_sched_entity_init(&adev->vce.entity, DRM_SCHED_PRIORITY_NORMAL,
+				  &sched, 1, NULL);
+	if (r != 0) {
+		DRM_ERROR("Failed setting up VCE run queue.\n");
+		return r;
 	}
 
 	return 0;
@@ -743,12 +742,12 @@ int amdgpu_vce_ring_parse_cs(struct amdgpu_cs_parser *p,
 	uint32_t created = 0;
 	uint32_t allocated = 0;
 	uint32_t tmp, handle = 0;
-	uint32_t dummy = 0xffffffff;
-	uint32_t *size = &dummy;
+	uint32_t *size = &tmp;
 	unsigned int idx;
 	int i, r = 0;
 
 	job->vm = NULL;
+	ib->gpu_addr = amdgpu_sa_bo_gpu_addr(ib->sa_bo);
 
 	for (idx = 0; idx < ib->length_dw;) {
 		uint32_t len = amdgpu_ib_get_value(ib, idx);
@@ -1043,6 +1042,7 @@ out:
 	if (!r) {
 		/* No error, free all destroyed handle slots */
 		tmp = destroyed;
+		amdgpu_ib_free(p->adev, ib, NULL);
 	} else {
 		/* Error during parsing, free all allocated handle slots */
 		tmp = allocated;

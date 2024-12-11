@@ -5,14 +5,13 @@
 
 /dts-v1/;
 #include <dt-bindings/pwm/pwm.h>
-#include "rk3399-base.dtsi"
+#include "rk3399.dtsi"
 
 / {
 	model = "Rockchip RK3399 Evaluation Board";
 	compatible = "rockchip,rk3399-evb", "rockchip,rk3399";
 
 	aliases {
-		ethernet0 = &gmac;
 		mmc0 = &sdhci;
 	};
 

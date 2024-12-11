@@ -1142,8 +1142,7 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 	if (target->compat_from_user)
 		target->compat_from_user(t->data, ct->data);
 	else
-		unsafe_memcpy(t->data, ct->data, tsize - sizeof(*ct),
-			      /* UAPI 0-sized destination */);
+		memcpy(t->data, ct->data, tsize - sizeof(*ct));
 
 	tsize += off;
 	t->u.user.target_size = tsize;
@@ -1269,7 +1268,7 @@ struct xt_table *xt_find_table_lock(struct net *net, u_int8_t af,
 
 	/* and once again: */
 	list_for_each_entry(t, &xt_net->tables[af], list)
-		if (strcmp(t->name, name) == 0 && owner == t->me)
+		if (strcmp(t->name, name) == 0)
 			return t;
 
 	module_put(owner);

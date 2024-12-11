@@ -59,11 +59,11 @@ static int adf_get_vf_real_id(u32 fake)
 }
 
 /**
- * adf_clean_vf_map() - Cleans VF id mappings
- * @vf: flag indicating whether mappings is cleaned
- *	for vfs only or for vfs and pfs
+ * adf_clean_vf_map() - Cleans VF id mapings
  *
  * Function cleans internal ids for virtual functions.
+ * @vf: flag indicating whether mappings is cleaned
+ *	for vfs only or for vfs and pfs
  */
 void adf_clean_vf_map(bool vf)
 {

@@ -25,6 +25,10 @@
 #include <math.h>
 #include "pmu.h"
 
+#ifdef PARSER_DEBUG
+extern int expr_debug;
+#endif
+
 struct expr_id_data {
 	union {
 		struct {
@@ -523,7 +527,7 @@ double expr__strcmp_cpuid_str(const struct expr_parse_ctx *ctx __maybe_unused,
 		       bool compute_ids __maybe_unused, const char *test_id)
 {
 	double ret;
-	struct perf_pmu *pmu = perf_pmus__find_core_pmu();
+	struct perf_pmu *pmu = pmu__find_core_pmu();
 	char *cpuid = perf_pmu__getcpuid(pmu);
 
 	if (!cpuid)

@@ -2,24 +2,19 @@
 
 SUBDIRS = lib generated samples
 
-all: $(SUBDIRS) libynl.a
-
-samples: | lib generated
-libynl.a: | lib generated
-	@echo -e "\tAR $@"
-	@ar rcs $@ lib/ynl.o generated/*-user.o
+all: $(SUBDIRS)
+	./ynl-regen.sh -f -p $(PWD)/../../../
 
 $(SUBDIRS):
 	@if [ -f "$@/Makefile" ] ; then \
 		$(MAKE) -C $@ ; \
 	fi
 
-clean distclean:
+clean hardclean:
 	@for dir in $(SUBDIRS) ; do \
 		if [ -f "$$dir/Makefile" ] ; then \
 			$(MAKE) -C $$dir $@; \
 		fi \
 	done
-	rm -f libynl.a
 
-.PHONY: all clean distclean $(SUBDIRS)
+.PHONY: clean all $(SUBDIRS)

@@ -11,7 +11,6 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/spinlock.h>
 #include <dt-bindings/gpio/uniphier-gpio.h>
 
@@ -165,7 +164,7 @@ static int uniphier_gpio_to_irq(struct gpio_chip *chip, unsigned int offset)
 	if (offset < UNIPHIER_GPIO_IRQ_OFFSET)
 		return -ENXIO;
 
-	fwspec.fwnode = dev_fwnode(chip->parent);
+	fwspec.fwnode = of_node_to_fwnode(chip->parent->of_node);
 	fwspec.param_count = 2;
 	fwspec.param[0] = offset - UNIPHIER_GPIO_IRQ_OFFSET;
 	/*
@@ -405,7 +404,7 @@ static int uniphier_gpio_probe(struct platform_device *pdev)
 	priv->domain = irq_domain_create_hierarchy(
 					parent_domain, 0,
 					UNIPHIER_GPIO_IRQ_MAX_NUM,
-					dev_fwnode(dev),
+					of_node_to_fwnode(dev->of_node),
 					&uniphier_gpio_irq_domain_ops, priv);
 	if (!priv->domain)
 		return -ENOMEM;
@@ -415,11 +414,13 @@ static int uniphier_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void uniphier_gpio_remove(struct platform_device *pdev)
+static int uniphier_gpio_remove(struct platform_device *pdev)
 {
 	struct uniphier_gpio_priv *priv = platform_get_drvdata(pdev);
 
 	irq_domain_remove(priv->domain);
+
+	return 0;
 }
 
 static int __maybe_unused uniphier_gpio_suspend(struct device *dev)
@@ -481,7 +482,7 @@ MODULE_DEVICE_TABLE(of, uniphier_gpio_match);
 
 static struct platform_driver uniphier_gpio_driver = {
 	.probe = uniphier_gpio_probe,
-	.remove_new = uniphier_gpio_remove,
+	.remove = uniphier_gpio_remove,
 	.driver = {
 		.name = "uniphier-gpio",
 		.of_match_table = uniphier_gpio_match,

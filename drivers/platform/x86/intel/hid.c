@@ -13,7 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/string_choices.h>
 #include <linux/suspend.h>
 #include "../dual_accel_detect.h"
 
@@ -39,7 +38,6 @@ MODULE_PARM_DESC(enable_sw_tablet_mode,
 /* When NOT in tablet mode, VGBS returns with the flag 0x40 */
 #define TABLET_MODE_FLAG BIT(6)
 
-MODULE_DESCRIPTION("Intel HID Event hotkey driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alex Hung");
 
@@ -51,8 +49,6 @@ static const struct acpi_device_id intel_hid_ids[] = {
 	{"INTC1076", 0},
 	{"INTC1077", 0},
 	{"INTC1078", 0},
-	{"INTC107B", 0},
-	{"INTC10CB", 0},
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, intel_hid_ids);
@@ -332,8 +328,10 @@ static int intel_hid_set_enable(struct device *device, bool enable)
 	acpi_handle handle = ACPI_HANDLE(device);
 
 	/* Enable|disable features - power button is always enabled */
-	if (!intel_hid_execute_method(handle, INTEL_HID_DSM_HDSM_FN, enable)) {
-		dev_warn(device, "failed to %s hotkeys\n", str_enable_disable(enable));
+	if (!intel_hid_execute_method(handle, INTEL_HID_DSM_HDSM_FN,
+				      enable)) {
+		dev_warn(device, "failed to %sable hotkeys\n",
+			 enable ? "en" : "dis");
 		return -EIO;
 	}
 
@@ -506,7 +504,6 @@ static void notify_handler(acpi_handle handle, u32 event, void *context)
 	struct platform_device *device = context;
 	struct intel_hid_priv *priv = dev_get_drvdata(&device->dev);
 	unsigned long long ev_index;
-	struct key_entry *ke;
 	int err;
 
 	/*
@@ -548,14 +545,10 @@ static void notify_handler(acpi_handle handle, u32 event, void *context)
 		if (event == 0xc0 || !priv->array)
 			return;
 
-		ke = sparse_keymap_entry_from_scancode(priv->array, event);
-		if (!ke) {
+		if (!sparse_keymap_entry_from_scancode(priv->array, event)) {
 			dev_info(&device->dev, "unknown event 0x%x\n", event);
 			return;
 		}
-
-		if (ke->type == KE_IGNORE)
-			return;
 
 wakeup:
 		pm_wakeup_hard_event(&device->dev);

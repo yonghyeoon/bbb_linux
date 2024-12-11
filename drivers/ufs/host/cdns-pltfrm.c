@@ -136,7 +136,7 @@ static int cdns_ufs_set_hclkdiv(struct ufs_hba *hba)
 	 * Make sure the register was updated,
 	 * UniPro layer will not work with an incorrect value.
 	 */
-	ufshcd_readl(hba, CDNS_UFS_REG_HCLKDIV);
+	mb();
 
 	return 0;
 }
@@ -305,11 +305,12 @@ static int cdns_ufs_pltfrm_probe(struct platform_device *pdev)
  *
  * Return: 0 (success).
  */
-static void cdns_ufs_pltfrm_remove(struct platform_device *pdev)
+static int cdns_ufs_pltfrm_remove(struct platform_device *pdev)
 {
 	struct ufs_hba *hba =  platform_get_drvdata(pdev);
 
 	ufshcd_remove(hba);
+	return 0;
 }
 
 static const struct dev_pm_ops cdns_ufs_dev_pm_ops = {
@@ -321,7 +322,7 @@ static const struct dev_pm_ops cdns_ufs_dev_pm_ops = {
 
 static struct platform_driver cdns_ufs_pltfrm_driver = {
 	.probe	= cdns_ufs_pltfrm_probe,
-	.remove_new = cdns_ufs_pltfrm_remove,
+	.remove	= cdns_ufs_pltfrm_remove,
 	.driver	= {
 		.name   = "cdns-ufshcd",
 		.pm     = &cdns_ufs_dev_pm_ops,

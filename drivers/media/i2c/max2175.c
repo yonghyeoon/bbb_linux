@@ -257,7 +257,7 @@ static const struct regmap_config max2175_regmap_config = {
 	.reg_defaults = max2175_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(max2175_reg_defaults),
 	.volatile_table = &max2175_volatile_regs,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
 
 struct max2175 {
@@ -1413,8 +1413,8 @@ static void max2175_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max2175_id[] = {
-	{ DRIVER_NAME },
-	{}
+	{ DRIVER_NAME, 0},
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, max2175_id);
 

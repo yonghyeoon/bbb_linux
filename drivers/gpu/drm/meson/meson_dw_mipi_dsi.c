@@ -95,18 +95,11 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
 		return ret;
 	}
 
-	clk_disable_unprepare(mipi_dsi->px_clk);
 	ret = clk_set_rate(mipi_dsi->px_clk, mipi_dsi->mode->clock * 1000);
 
 	if (ret) {
 		dev_err(mipi_dsi->dev, "Failed to set DSI Pixel clock rate %u (%d)\n",
 			mipi_dsi->mode->clock * 1000, ret);
-		return ret;
-	}
-
-	ret = clk_prepare_enable(mipi_dsi->px_clk);
-	if (ret) {
-		dev_err(mipi_dsi->dev, "Failed to enable DSI Pixel clock (ret %d)\n", ret);
 		return ret;
 	}
 
@@ -330,11 +323,13 @@ static int meson_dw_mipi_dsi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void meson_dw_mipi_dsi_remove(struct platform_device *pdev)
+static int meson_dw_mipi_dsi_remove(struct platform_device *pdev)
 {
 	struct meson_dw_mipi_dsi *mipi_dsi = platform_get_drvdata(pdev);
 
 	dw_mipi_dsi_remove(mipi_dsi->dmd);
+
+	return 0;
 }
 
 static const struct of_device_id meson_dw_mipi_dsi_of_table[] = {
@@ -345,7 +340,7 @@ MODULE_DEVICE_TABLE(of, meson_dw_mipi_dsi_of_table);
 
 static struct platform_driver meson_dw_mipi_dsi_platform_driver = {
 	.probe		= meson_dw_mipi_dsi_probe,
-	.remove_new	= meson_dw_mipi_dsi_remove,
+	.remove		= meson_dw_mipi_dsi_remove,
 	.driver		= {
 		.name		= DRIVER_NAME,
 		.of_match_table	= meson_dw_mipi_dsi_of_table,

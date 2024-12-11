@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include "messages.h"
 #include "ulist.h"
+#include "ctree.h"
 
 /*
  * ulist is a generic data structure to hold a collection of unique u64
@@ -50,7 +51,6 @@ void ulist_init(struct ulist *ulist)
 	INIT_LIST_HEAD(&ulist->nodes);
 	ulist->root = RB_ROOT;
 	ulist->nnodes = 0;
-	ulist->prealloc = NULL;
 }
 
 /*
@@ -69,8 +69,6 @@ void ulist_release(struct ulist *ulist)
 	list_for_each_entry_safe(node, next, &ulist->nodes, list) {
 		kfree(node);
 	}
-	kfree(ulist->prealloc);
-	ulist->prealloc = NULL;
 	ulist->root = RB_ROOT;
 	INIT_LIST_HEAD(&ulist->nodes);
 }
@@ -106,12 +104,6 @@ struct ulist *ulist_alloc(gfp_t gfp_mask)
 	ulist_init(ulist);
 
 	return ulist;
-}
-
-void ulist_prealloc(struct ulist *ulist, gfp_t gfp_mask)
-{
-	if (!ulist->prealloc)
-		ulist->prealloc = kzalloc(sizeof(*ulist->prealloc), gfp_mask);
 }
 
 /*
@@ -215,15 +207,9 @@ int ulist_add_merge(struct ulist *ulist, u64 val, u64 aux,
 			*old_aux = node->aux;
 		return 0;
 	}
-
-	if (ulist->prealloc) {
-		node = ulist->prealloc;
-		ulist->prealloc = NULL;
-	} else {
-		node = kmalloc(sizeof(*node), gfp_mask);
-		if (!node)
-			return -ENOMEM;
-	}
+	node = kmalloc(sizeof(*node), gfp_mask);
+	if (!node)
+		return -ENOMEM;
 
 	node->val = val;
 	node->aux = aux;
@@ -237,8 +223,7 @@ int ulist_add_merge(struct ulist *ulist, u64 val, u64 aux,
 }
 
 /*
- * Delete one node from ulist.
- *
+ * ulist_del - delete one node from ulist
  * @ulist:	ulist to remove node from
  * @val:	value to delete
  * @aux:	aux to delete

@@ -7,8 +7,6 @@
  * functionality:
  */
 
-#include <linux/rcupdate.h>
-#include <linux/refcount.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
 
@@ -63,8 +61,7 @@ extern asmlinkage void schedule_tail(struct task_struct *prev);
 extern void init_idle(struct task_struct *idle, int cpu);
 
 extern int sched_fork(unsigned long clone_flags, struct task_struct *p);
-extern int sched_cgroup_fork(struct task_struct *p, struct kernel_clone_args *kargs);
-extern void sched_cancel_fork(struct task_struct *p);
+extern void sched_cgroup_fork(struct task_struct *p, struct kernel_clone_args *kargs);
 extern void sched_post_fork(struct task_struct *p);
 extern void sched_dead(struct task_struct *p);
 
@@ -118,11 +115,6 @@ static inline struct task_struct *get_task_struct(struct task_struct *t)
 {
 	refcount_inc(&t->usage);
 	return t;
-}
-
-static inline struct task_struct *tryget_task_struct(struct task_struct *t)
-{
-	return refcount_inc_not_zero(&t->usage) ? t : NULL;
 }
 
 extern void __put_task_struct(struct task_struct *t);
@@ -233,7 +225,5 @@ static inline void task_unlock(struct task_struct *p)
 {
 	spin_unlock(&p->alloc_lock);
 }
-
-DEFINE_GUARD(task_lock, struct task_struct *, task_lock(_T), task_unlock(_T))
 
 #endif /* _LINUX_SCHED_TASK_H */

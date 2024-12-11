@@ -817,8 +817,8 @@ static void dpi_remove(struct platform_device *pdev)
 
 static struct platform_driver omap_dpi_driver = {
 	.probe		= dpi_probe,
-	.remove		= dpi_remove,
-	.driver		= {
+	.remove_new	= dpi_remove,
+	.driver         = {
 		.name   = "omapdss_dpi",
 		.suppress_bind_attrs = true,
 	},

@@ -5,7 +5,7 @@
  */
 #include <linux/blkdev.h>
 #include <linux/pr.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "nvme.h"
 
@@ -72,12 +72,12 @@ static int nvme_send_ns_pr_command(struct nvme_ns *ns, struct nvme_command *c,
 	return nvme_submit_sync_cmd(ns->queue, c, data, data_len);
 }
 
-static int nvme_status_to_pr_err(int status)
+static int nvme_sc_to_pr_err(int nvme_sc)
 {
-	if (nvme_is_path_error(status))
+	if (nvme_is_path_error(nvme_sc))
 		return PR_STS_PATH_FAILED;
 
-	switch (status & NVME_SCT_SC_MASK) {
+	switch (nvme_sc) {
 	case NVME_SC_SUCCESS:
 		return PR_STS_SUCCESS;
 	case NVME_SC_RESERVATION_CONFLICT:
@@ -97,7 +97,8 @@ static int nvme_status_to_pr_err(int status)
 static int nvme_send_pr_command(struct block_device *bdev,
 		struct nvme_command *c, void *data, unsigned int data_len)
 {
-	if (nvme_disk_is_ns_head(bdev->bd_disk))
+	if (IS_ENABLED(CONFIG_NVME_MULTIPATH) &&
+	    bdev->bd_disk->fops == &nvme_ns_head_ops)
 		return nvme_send_ns_head_pr_command(bdev, c, data, data_len);
 
 	return nvme_send_ns_pr_command(bdev->bd_disk->private_data, c, data,
@@ -121,7 +122,7 @@ static int nvme_pr_command(struct block_device *bdev, u32 cdw10,
 	if (ret < 0)
 		return ret;
 
-	return nvme_status_to_pr_err(ret);
+	return nvme_sc_to_pr_err(ret);
 }
 
 static int nvme_pr_register(struct block_device *bdev, u64 old,
@@ -196,7 +197,7 @@ retry:
 	if (ret < 0)
 		return ret;
 
-	return nvme_status_to_pr_err(ret);
+	return nvme_sc_to_pr_err(ret);
 }
 
 static int nvme_pr_read_keys(struct block_device *bdev,

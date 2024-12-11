@@ -594,8 +594,10 @@ static int saa6752hs_set_fmt(struct v4l2_subdev *sd,
 	f->field = V4L2_FIELD_INTERLACED;
 	f->colorspace = V4L2_COLORSPACE_SMPTE170M;
 
-	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
+		sd_state->pads->try_fmt = *f;
 		return 0;
+	}
 
 	/*
 	  FIXME: translate and round width/height into EMPRESS
@@ -770,7 +772,7 @@ static void saa6752hs_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id saa6752hs_id[] = {
-	{ "saa6752hs" },
+	{ "saa6752hs", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, saa6752hs_id);

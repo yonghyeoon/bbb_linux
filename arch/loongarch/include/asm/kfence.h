@@ -10,14 +10,12 @@
 #define _ASM_LOONGARCH_KFENCE_H
 
 #include <linux/kfence.h>
-#include <linux/vmalloc.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
 
 static inline bool arch_kfence_init_pool(void)
 {
 	int err;
-	char *kaddr, *vaddr;
 	char *kfence_pool = __kfence_pool;
 	struct vm_struct *area;
 
@@ -37,14 +35,6 @@ static inline bool arch_kfence_init_pool(void)
 		return false;
 	}
 
-	kaddr = kfence_pool;
-	vaddr = __kfence_pool;
-	while (kaddr < kfence_pool + KFENCE_POOL_SIZE) {
-		set_page_address(virt_to_page(kaddr), vaddr);
-		kaddr += PAGE_SIZE;
-		vaddr += PAGE_SIZE;
-	}
-
 	return true;
 }
 
@@ -53,13 +43,13 @@ static inline bool kfence_protect_page(unsigned long addr, bool protect)
 {
 	pte_t *pte = virt_to_kpte(addr);
 
-	if (WARN_ON(!pte) || pte_none(ptep_get(pte)))
+	if (WARN_ON(!pte) || pte_none(*pte))
 		return false;
 
 	if (protect)
-		set_pte(pte, __pte(pte_val(ptep_get(pte)) & ~(_PAGE_VALID | _PAGE_PRESENT)));
+		set_pte(pte, __pte(pte_val(*pte) & ~(_PAGE_VALID | _PAGE_PRESENT)));
 	else
-		set_pte(pte, __pte(pte_val(ptep_get(pte)) | (_PAGE_VALID | _PAGE_PRESENT)));
+		set_pte(pte, __pte(pte_val(*pte) | (_PAGE_VALID | _PAGE_PRESENT)));
 
 	preempt_disable();
 	local_flush_tlb_one(addr);

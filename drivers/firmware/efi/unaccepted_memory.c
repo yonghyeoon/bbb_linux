@@ -3,8 +3,6 @@
 #include <linux/efi.h>
 #include <linux/memblock.h>
 #include <linux/spinlock.h>
-#include <linux/crash_dump.h>
-#include <linux/nmi.h>
 #include <asm/unaccepted_memory.h>
 
 /* Protects unaccepted memory bitmap and accepting_list */
@@ -30,12 +28,11 @@ static LIST_HEAD(accepting_list);
  *  - memory that is below phys_base;
  *  - memory that is above the memory that addressable by the bitmap;
  */
-void accept_memory(phys_addr_t start, unsigned long size)
+void accept_memory(phys_addr_t start, phys_addr_t end)
 {
 	struct efi_unaccepted_memory *unaccepted;
 	unsigned long range_start, range_end;
 	struct accept_range range, *entry;
-	phys_addr_t end = start + size;
 	unsigned long flags;
 	u64 unit_size;
 
@@ -75,13 +72,13 @@ void accept_memory(phys_addr_t start, unsigned long size)
 	 * "guard" page is accepted in addition to the memory that needs to be
 	 * used:
 	 *
-	 * 1. Implicitly extend the range_contains_unaccepted_memory(start, size)
-	 *    checks up to the next unit_size if 'start+size' is aligned on a
-	 *    unit_size boundary.
+	 * 1. Implicitly extend the range_contains_unaccepted_memory(start, end)
+	 *    checks up to end+unit_size if 'end' is aligned on a unit_size
+	 *    boundary.
 	 *
-	 * 2. Implicitly extend accept_memory(start, size) to the next unit_size
-	 *    if 'size+end' is aligned on a unit_size boundary. (immediately
-	 *    following this comment)
+	 * 2. Implicitly extend accept_memory(start, end) to end+unit_size if
+	 *    'end' is aligned on a unit_size boundary. (immediately following
+	 *    this comment)
 	 */
 	if (!(end % unit_size))
 		end += unit_size;
@@ -151,16 +148,12 @@ retry:
 	}
 
 	list_del(&range.list);
-
-	touch_softlockup_watchdog();
-
 	spin_unlock_irqrestore(&unaccepted_memory_lock, flags);
 }
 
-bool range_contains_unaccepted_memory(phys_addr_t start, unsigned long size)
+bool range_contains_unaccepted_memory(phys_addr_t start, phys_addr_t end)
 {
 	struct efi_unaccepted_memory *unaccepted;
-	phys_addr_t end = start + size;
 	unsigned long flags;
 	bool ret = false;
 	u64 unit_size;
@@ -208,22 +201,3 @@ bool range_contains_unaccepted_memory(phys_addr_t start, unsigned long size)
 
 	return ret;
 }
-
-#ifdef CONFIG_PROC_VMCORE
-static bool unaccepted_memory_vmcore_pfn_is_ram(struct vmcore_cb *cb,
-						unsigned long pfn)
-{
-	return !pfn_is_unaccepted_memory(pfn);
-}
-
-static struct vmcore_cb vmcore_cb = {
-	.pfn_is_ram = unaccepted_memory_vmcore_pfn_is_ram,
-};
-
-static int __init unaccepted_memory_init_kdump(void)
-{
-	register_vmcore_cb(&vmcore_cb);
-	return 0;
-}
-core_initcall(unaccepted_memory_init_kdump);
-#endif /* CONFIG_PROC_VMCORE */

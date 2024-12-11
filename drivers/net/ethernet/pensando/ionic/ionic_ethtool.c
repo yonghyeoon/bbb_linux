@@ -11,8 +11,6 @@
 #include "ionic_ethtool.h"
 #include "ionic_stats.h"
 
-#define IONIC_MAX_RX_COPYBREAK	min(U16_MAX, IONIC_MAX_BUF_LEN)
-
 static void ionic_get_stats_strings(struct ionic_lif *lif, u8 *buf)
 {
 	u32 i;
@@ -92,15 +90,10 @@ static void ionic_get_regs(struct net_device *netdev, struct ethtool_regs *regs,
 			   void *p)
 {
 	struct ionic_lif *lif = netdev_priv(netdev);
-	struct ionic_dev *idev;
 	unsigned int offset;
 	unsigned int size;
 
 	regs->version = IONIC_DEV_CMD_REG_VERSION;
-
-	idev = &lif->ionic->idev;
-	if (!idev->dev_info_regs)
-		return;
 
 	offset = 0;
 	size = IONIC_DEV_INFO_REG_COUNT * sizeof(u32);
@@ -108,7 +101,7 @@ static void ionic_get_regs(struct net_device *netdev, struct ethtool_regs *regs,
 
 	offset += size;
 	size = IONIC_DEV_CMD_REG_COUNT * sizeof(u32);
-	memcpy_fromio(p + offset, idev->dev_cmd_regs->words, size);
+	memcpy_fromio(p + offset, lif->ionic->idev.dev_cmd_regs->words, size);
 }
 
 static void ionic_get_link_ext_stats(struct net_device *netdev,
@@ -728,11 +721,6 @@ static int ionic_set_channels(struct net_device *netdev,
 
 	ionic_init_queue_params(lif, &qparam);
 
-	if ((ch->rx_count || ch->tx_count) && lif->xdp_prog) {
-		netdev_info(lif->netdev, "Split Tx/Rx interrupts not available when using XDP\n");
-		return -EOPNOTSUPP;
-	}
-
 	if (ch->rx_count != ch->tx_count) {
 		netdev_info(netdev, "The rx and tx count must be equal\n");
 		return -EINVAL;
@@ -835,38 +823,36 @@ static u32 ionic_get_rxfh_key_size(struct net_device *netdev)
 	return IONIC_RSS_HASH_KEY_SIZE;
 }
 
-static int ionic_get_rxfh(struct net_device *netdev,
-			  struct ethtool_rxfh_param *rxfh)
+static int ionic_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			  u8 *hfunc)
 {
 	struct ionic_lif *lif = netdev_priv(netdev);
 	unsigned int i, tbl_sz;
 
-	if (rxfh->indir) {
+	if (indir) {
 		tbl_sz = le16_to_cpu(lif->ionic->ident.lif.eth.rss_ind_tbl_sz);
 		for (i = 0; i < tbl_sz; i++)
-			rxfh->indir[i] = lif->rss_ind_tbl[i];
+			indir[i] = lif->rss_ind_tbl[i];
 	}
 
-	if (rxfh->key)
-		memcpy(rxfh->key, lif->rss_hash_key, IONIC_RSS_HASH_KEY_SIZE);
+	if (key)
+		memcpy(key, lif->rss_hash_key, IONIC_RSS_HASH_KEY_SIZE);
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
 	return 0;
 }
 
-static int ionic_set_rxfh(struct net_device *netdev,
-			  struct ethtool_rxfh_param *rxfh,
-			  struct netlink_ext_ack *extack)
+static int ionic_set_rxfh(struct net_device *netdev, const u32 *indir,
+			  const u8 *key, const u8 hfunc)
 {
 	struct ionic_lif *lif = netdev_priv(netdev);
 
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	return ionic_lif_rss_config(lif, lif->rss_types,
-				    rxfh->key, rxfh->indir);
+	return ionic_lif_rss_config(lif, lif->rss_types, key, indir);
 }
 
 static int ionic_set_tunable(struct net_device *dev,
@@ -874,17 +860,10 @@ static int ionic_set_tunable(struct net_device *dev,
 			     const void *data)
 {
 	struct ionic_lif *lif = netdev_priv(dev);
-	u32 rx_copybreak;
 
 	switch (tuna->id) {
 	case ETHTOOL_RX_COPYBREAK:
-		rx_copybreak = *(u32 *)data;
-		if (rx_copybreak > IONIC_MAX_RX_COPYBREAK) {
-			netdev_err(dev, "Max supported rx_copybreak size: %u\n",
-				   IONIC_MAX_RX_COPYBREAK);
-			return -EINVAL;
-		}
-		lif->rx_copybreak = (u16)rx_copybreak;
+		lif->rx_copybreak = *(u32 *)data;
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -977,7 +956,7 @@ static int ionic_get_module_eeprom(struct net_device *netdev,
 }
 
 static int ionic_get_ts_info(struct net_device *netdev,
-			     struct kernel_ethtool_ts_info *info)
+			     struct ethtool_ts_info *info)
 {
 	struct ionic_lif *lif = netdev_priv(netdev);
 	struct ionic *ionic = lif->ionic;
@@ -989,6 +968,8 @@ static int ionic_get_ts_info(struct net_device *netdev,
 	info->phc_index = ptp_clock_index(lif->phc->ptp);
 
 	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+				SOF_TIMESTAMPING_RX_SOFTWARE |
+				SOF_TIMESTAMPING_SOFTWARE |
 				SOF_TIMESTAMPING_TX_HARDWARE |
 				SOF_TIMESTAMPING_RX_HARDWARE |
 				SOF_TIMESTAMPING_RAW_HARDWARE;

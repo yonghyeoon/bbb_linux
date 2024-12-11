@@ -331,11 +331,11 @@ out:
 }
 
 static int qtnf_change_beacon(struct wiphy *wiphy, struct net_device *dev,
-			      struct cfg80211_ap_update *info)
+			      struct cfg80211_beacon_data *info)
 {
 	struct qtnf_vif *vif = qtnf_netdev_get_priv(dev);
 
-	return qtnf_mgmt_set_appie(vif, &info->beacon);
+	return qtnf_mgmt_set_appie(vif, info);
 }
 
 static int qtnf_start_ap(struct wiphy *wiphy, struct net_device *dev,
@@ -837,7 +837,7 @@ static int qtnf_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 static int qtnf_start_radar_detection(struct wiphy *wiphy,
 				      struct net_device *ndev,
 				      struct cfg80211_chan_def *chandef,
-				      u32 cac_time_ms, int link_id)
+				      u32 cac_time_ms)
 {
 	struct qtnf_vif *vif = qtnf_netdev_get_priv(ndev);
 	int ret;

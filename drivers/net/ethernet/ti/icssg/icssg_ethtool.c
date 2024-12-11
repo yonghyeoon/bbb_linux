@@ -45,7 +45,7 @@ static int emac_set_link_ksettings(struct net_device *ndev,
 	return phy_ethtool_set_link_ksettings(ndev, ecmd);
 }
 
-static int emac_get_eee(struct net_device *ndev, struct ethtool_keee *edata)
+static int emac_get_eee(struct net_device *ndev, struct ethtool_eee *edata)
 {
 	if (!ndev->phydev)
 		return -EOPNOTSUPP;
@@ -53,7 +53,7 @@ static int emac_get_eee(struct net_device *ndev, struct ethtool_keee *edata)
 	return phy_ethtool_get_eee(ndev->phydev, edata);
 }
 
-static int emac_set_eee(struct net_device *ndev, struct ethtool_keee *edata)
+static int emac_set_eee(struct net_device *ndev, struct ethtool_eee *edata)
 {
 	if (!ndev->phydev)
 		return -EOPNOTSUPP;
@@ -68,13 +68,9 @@ static int emac_nway_reset(struct net_device *ndev)
 
 static int emac_get_sset_count(struct net_device *ndev, int stringset)
 {
-	struct prueth_emac *emac = netdev_priv(ndev);
 	switch (stringset) {
 	case ETH_SS_STATS:
-		if (emac->prueth->pa_stats)
-			return ICSSG_NUM_ETHTOOL_STATS;
-		else
-			return ICSSG_NUM_ETHTOOL_STATS - ICSSG_NUM_PA_STATS;
+		return ICSSG_NUM_ETHTOOL_STATS;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -82,18 +78,18 @@ static int emac_get_sset_count(struct net_device *ndev, int stringset)
 
 static void emac_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 {
-	struct prueth_emac *emac = netdev_priv(ndev);
 	u8 *p = data;
 	int i;
 
 	switch (stringset) {
 	case ETH_SS_STATS:
-		for (i = 0; i < ARRAY_SIZE(icssg_all_miig_stats); i++)
-			if (!icssg_all_miig_stats[i].standard_stats)
-				ethtool_puts(&p, icssg_all_miig_stats[i].name);
-		if (emac->prueth->pa_stats)
-			for (i = 0; i < ARRAY_SIZE(icssg_all_pa_stats); i++)
-				ethtool_puts(&p, icssg_all_pa_stats[i].name);
+		for (i = 0; i < ARRAY_SIZE(icssg_all_stats); i++) {
+			if (!icssg_all_stats[i].standard_stats) {
+				memcpy(p, icssg_all_stats[i].name,
+				       ETH_GSTRING_LEN);
+				p += ETH_GSTRING_LEN;
+			}
+		}
 		break;
 	default:
 		break;
@@ -108,17 +104,13 @@ static void emac_get_ethtool_stats(struct net_device *ndev,
 
 	emac_update_hardware_stats(emac);
 
-	for (i = 0; i < ARRAY_SIZE(icssg_all_miig_stats); i++)
-		if (!icssg_all_miig_stats[i].standard_stats)
+	for (i = 0; i < ARRAY_SIZE(icssg_all_stats); i++)
+		if (!icssg_all_stats[i].standard_stats)
 			*(data++) = emac->stats[i];
-
-	if (emac->prueth->pa_stats)
-		for (i = 0; i < ARRAY_SIZE(icssg_all_pa_stats); i++)
-			*(data++) = emac->pa_stats[i];
 }
 
 static int emac_get_ts_info(struct net_device *ndev,
-			    struct kernel_ethtool_ts_info *info)
+			    struct ethtool_ts_info *info)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 
@@ -126,6 +118,8 @@ static int emac_get_ts_info(struct net_device *ndev,
 		SOF_TIMESTAMPING_TX_HARDWARE |
 		SOF_TIMESTAMPING_TX_SOFTWARE |
 		SOF_TIMESTAMPING_RX_HARDWARE |
+		SOF_TIMESTAMPING_RX_SOFTWARE |
+		SOF_TIMESTAMPING_SOFTWARE |
 		SOF_TIMESTAMPING_RAW_HARDWARE;
 
 	info->phc_index = icss_iep_get_ptp_clock_idx(emac->iep);
@@ -294,6 +288,61 @@ static int emac_set_per_queue_coalesce(struct net_device *ndev, u32 queue,
 	return 0;
 }
 
+static int emac_get_mm(struct net_device *ndev, struct ethtool_mm_state *state)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth_qos_iet *iet = &emac->qos.iet;
+	void __iomem *config;
+
+	config = emac->dram.va + ICSSG_CONFIG_OFFSET;
+
+	state->tx_enabled = iet->fpe_enabled;
+	state->pmac_enabled = true;
+	state->verify_status = readb(config + PRE_EMPTION_VERIFY_STATUS);
+	state->tx_min_frag_size = iet->tx_min_frag_size;
+	state->rx_min_frag_size = 124;
+	state->tx_active = readb(config + PRE_EMPTION_ACTIVE_TX) ? true : false;
+	state->verify_enabled = readb(config + PRE_EMPTION_ENABLE_VERIFY) ? true : false;
+	state->verify_time = iet->verify_time_ms;
+
+	/* 802.3-2018 clause 30.14.1.6, says that the aMACMergeVerifyTime
+	 * variable has a range between 1 and 128 ms inclusive. Limit to that.
+	 */
+	state->max_verify_time = 128;
+
+	return 0;
+}
+
+static int emac_set_mm(struct net_device *ndev, struct ethtool_mm_cfg *cfg,
+		       struct netlink_ext_ack *extack)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth_qos_iet *iet = &emac->qos.iet;
+
+	if (!cfg->pmac_enabled)
+		netdev_err(ndev, "preemptible MAC is alway enabled");
+
+	iet->verify_time_ms = cfg->verify_time;
+	iet->tx_min_frag_size = cfg->tx_min_frag_size;
+
+	iet->fpe_configured = cfg->tx_enabled;
+	iet->mac_verify_configured = cfg->verify_enabled;
+
+	return 0;
+}
+
+static void emac_get_mm_stats(struct net_device *ndev,
+			      struct ethtool_mm_stats *s)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+
+	s->MACMergeFrameAssOkCount = emac_get_stat_by_name(emac, "iet_asm_ok");
+	s->MACMergeFrameAssErrorCount = emac_get_stat_by_name(emac, "iet_asm_err");
+	s->MACMergeFrameSmdErrorCount = emac_get_stat_by_name(emac, "iet_bad_frag");
+	s->MACMergeFragCountRx = emac_get_stat_by_name(emac, "iet_rx_frag");
+	s->MACMergeFragCountTx = emac_get_stat_by_name(emac, "iet_tx_frag");
+}
+
 const struct ethtool_ops icssg_ethtool_ops = {
 	.get_drvinfo = emac_get_drvinfo,
 	.get_msglevel = emac_get_msglevel,
@@ -317,5 +366,7 @@ const struct ethtool_ops icssg_ethtool_ops = {
 	.set_eee = emac_set_eee,
 	.nway_reset = emac_nway_reset,
 	.get_rmon_stats = emac_get_rmon_stats,
+	.get_mm = emac_get_mm,
+	.set_mm = emac_set_mm,
+	.get_mm_stats = emac_get_mm_stats,
 };
-EXPORT_SYMBOL_GPL(icssg_ethtool_ops);

@@ -540,7 +540,7 @@ static struct platform_driver grvga_driver = {
 		.of_match_table = svgactrl_of_match,
 	},
 	.probe		= grvga_probe,
-	.remove		= grvga_remove,
+	.remove_new	= grvga_remove,
 };
 
 module_platform_driver(grvga_driver);

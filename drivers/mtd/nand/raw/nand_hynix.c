@@ -31,6 +31,7 @@ struct hynix_read_retry {
 
 /**
  * struct hynix_nand - private Hynix NAND struct
+ * @nand_technology: manufacturing process expressed in picometer
  * @read_retry: read-retry information
  */
 struct hynix_nand {
@@ -401,7 +402,7 @@ static int hynix_nand_rr_init(struct nand_chip *chip)
 	if (ret)
 		pr_warn("failed to initialize read-retry infrastructure");
 
-	return ret;
+	return 0;
 }
 
 static void hynix_nand_extract_oobsize(struct nand_chip *chip,

@@ -153,6 +153,7 @@ static int pci1xxxx_eeprom_read(void *priv_t, unsigned int off,
 
 		buf[byte] = readl(rb + MMAP_EEPROM_OFFSET(EEPROM_DATA_REG));
 	}
+	ret = byte;
 error:
 	release_sys_lock(priv);
 	return ret;
@@ -196,6 +197,7 @@ static int pci1xxxx_eeprom_write(void *priv_t, unsigned int off,
 			goto error;
 		}
 	}
+	ret = byte;
 error:
 	release_sys_lock(priv);
 	return ret;
@@ -256,6 +258,7 @@ static int pci1xxxx_otp_read(void *priv_t, unsigned int off,
 
 		buf[byte] = readl(rb + MMAP_OTP_OFFSET(OTP_RD_DATA_OFFSET));
 	}
+	ret = byte;
 error:
 	release_sys_lock(priv);
 	return ret;
@@ -312,6 +315,7 @@ static int pci1xxxx_otp_write(void *priv_t, unsigned int off,
 			goto error;
 		}
 	}
+	ret = byte;
 error:
 	release_sys_lock(priv);
 	return ret;
@@ -364,7 +368,6 @@ static int pci1xxxx_otp_eeprom_probe(struct auxiliary_device *aux_dev,
 	if (is_eeprom_responsive(priv)) {
 		priv->nvmem_config_eeprom.type = NVMEM_TYPE_EEPROM;
 		priv->nvmem_config_eeprom.name = EEPROM_NAME;
-		priv->nvmem_config_eeprom.id = NVMEM_DEVID_AUTO;
 		priv->nvmem_config_eeprom.dev = &aux_dev->dev;
 		priv->nvmem_config_eeprom.owner = THIS_MODULE;
 		priv->nvmem_config_eeprom.reg_read = pci1xxxx_eeprom_read;
@@ -384,7 +387,6 @@ static int pci1xxxx_otp_eeprom_probe(struct auxiliary_device *aux_dev,
 
 	priv->nvmem_config_otp.type = NVMEM_TYPE_OTP;
 	priv->nvmem_config_otp.name = OTP_NAME;
-	priv->nvmem_config_otp.id = NVMEM_DEVID_AUTO;
 	priv->nvmem_config_otp.dev = &aux_dev->dev;
 	priv->nvmem_config_otp.owner = THIS_MODULE;
 	priv->nvmem_config_otp.reg_read = pci1xxxx_otp_read;

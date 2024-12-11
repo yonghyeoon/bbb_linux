@@ -639,10 +639,10 @@ int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
 			if (ret == 1)
 				continue;
 			return ret;
-		case NF_STOLEN:
-			return NF_DROP_GETERR(verdict);
 		default:
-			WARN_ON_ONCE(1);
+			/* Implicit handling for NF_STOLEN, as well as any other
+			 * non conventional verdicts.
+			 */
 			return 0;
 		}
 	}
@@ -655,8 +655,10 @@ void nf_hook_slow_list(struct list_head *head, struct nf_hook_state *state,
 		       const struct nf_hook_entries *e)
 {
 	struct sk_buff *skb, *next;
-	LIST_HEAD(sublist);
+	struct list_head sublist;
 	int ret;
+
+	INIT_LIST_HEAD(&sublist);
 
 	list_for_each_entry_safe(skb, next, head, list) {
 		skb_list_del_init(skb);
@@ -813,21 +815,12 @@ int __init netfilter_init(void)
 	if (ret < 0)
 		goto err;
 
-#ifdef CONFIG_LWTUNNEL
-	ret = netfilter_lwtunnel_init();
-	if (ret < 0)
-		goto err_lwtunnel_pernet;
-#endif
 	ret = netfilter_log_init();
 	if (ret < 0)
-		goto err_log_pernet;
+		goto err_pernet;
 
 	return 0;
-err_log_pernet:
-#ifdef CONFIG_LWTUNNEL
-	netfilter_lwtunnel_fini();
-err_lwtunnel_pernet:
-#endif
+err_pernet:
 	unregister_pernet_subsys(&netfilter_net_ops);
 err:
 	return ret;

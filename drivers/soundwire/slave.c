@@ -16,7 +16,7 @@ static void sdw_slave_release(struct device *dev)
 	kfree(slave);
 }
 
-const struct device_type sdw_slave_type = {
+struct device_type sdw_slave_type = {
 	.name =		"sdw_slave",
 	.release =	sdw_slave_release,
 	.uevent =	sdw_slave_uevent,
@@ -97,13 +97,18 @@ static bool find_slave(struct sdw_bus *bus,
 		       struct acpi_device *adev,
 		       struct sdw_slave_id *id)
 {
-	unsigned int link_id;
 	u64 addr;
-	int ret;
+	unsigned int link_id;
+	acpi_status status;
 
-	ret = acpi_get_local_u64_address(adev->handle, &addr);
-	if (ret < 0)
+	status = acpi_evaluate_integer(adev->handle,
+				       METHOD_NAME__ADR, NULL, &addr);
+
+	if (ACPI_FAILURE(status)) {
+		dev_err(bus->dev, "_ADR resolution failed: %x\n",
+			status);
 		return false;
+	}
 
 	if (bus->ops->override_adr)
 		addr = bus->ops->override_adr(bus, addr);

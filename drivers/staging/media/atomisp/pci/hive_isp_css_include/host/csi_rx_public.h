@@ -16,6 +16,7 @@
 #ifndef __CSI_RX_PUBLIC_H_INCLUDED__
 #define __CSI_RX_PUBLIC_H_INCLUDED__
 
+#ifdef ISP2401
 /*****************************************************
  *
  * Native command interface (NCI).
@@ -94,7 +95,7 @@ hrt_data csi_rx_fe_ctrl_reg_load(
     const hrt_address reg);
 /**
  * @brief Store a value to the register.
- * Store a value to the register of the csi rx fe.
+ * Store a value to the registe of the csi rx fe.
  *
  * @param[in]	ID		The global unique ID for the ibuf-controller instance.
  * @param[in]	reg		The offset address of the register.
@@ -119,7 +120,7 @@ hrt_data csi_rx_be_ctrl_reg_load(
     const hrt_address reg);
 /**
  * @brief Store a value to the register.
- * Store a value to the register of the csi rx be.
+ * Store a value to the registe of the csi rx be.
  *
  * @param[in]	ID		The global unique ID for the ibuf-controller instance.
  * @param[in]	reg		The offset address of the register.
@@ -131,4 +132,5 @@ void csi_rx_be_ctrl_reg_store(
     const hrt_address reg,
     const hrt_data value);
 /* end of DLI */
+#endif /* ISP2401 */
 #endif /* __CSI_RX_PUBLIC_H_INCLUDED__ */

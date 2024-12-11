@@ -63,7 +63,6 @@ static struct dev_dax *__dax_pmem_probe(struct device *dev)
 		.id = id,
 		.pgmap = &pgmap,
 		.size = range_len(&range),
-		.memmap_on_memory = false,
 	};
 
 	return devm_create_dev_dax(&data);
@@ -94,7 +93,6 @@ static void __exit dax_pmem_exit(void)
 }
 module_exit(dax_pmem_exit);
 
-MODULE_DESCRIPTION("PMEM DAX: direct access to persistent memory");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");
 MODULE_ALIAS_ND_DEVICE(ND_DEVICE_DAX_PMEM);

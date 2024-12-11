@@ -1,4 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
+
+ifeq ($(CONFIG_OF_OVERLAY),y)
+DTC_FLAGS += -@
+endif
+
 dtb-$(CONFIG_ARCH_OMAP2) += \
 	omap2420-h4.dtb \
 	omap2420-n800.dtb \
@@ -79,9 +84,7 @@ dtb-$(CONFIG_ARCH_OMAP4) += \
 	omap4-sdp.dtb \
 	omap4-sdp-es23plus.dtb \
 	omap4-var-dvk-om44.dtb \
-	omap4-var-stk-om44.dtb \
-	omap4-xyboard-mz609.dtb \
-	omap4-xyboard-mz617.dtb
+	omap4-var-stk-om44.dtb
 dtb-$(CONFIG_SOC_AM33XX) += \
 	am335x-baltos-ir2110.dtb \
 	am335x-baltos-ir3220.dtb \
@@ -89,6 +92,39 @@ dtb-$(CONFIG_SOC_AM33XX) += \
 	am335x-base0033.dtb \
 	am335x-bone.dtb \
 	am335x-boneblack.dtb \
+	am335x-boneblack-uboot.dtb \
+	PB-MIKROBUS-1.dtbo \
+	PB-MIKROBUS-0.dtbo \
+	M-BB-BBGG-00A0.dtbo \
+	M-BB-BBG-00A0.dtbo \
+	BONE-ADC.dtbo \
+	BBORG_RELAY-00A2.dtbo \
+	BBORG_FAN-A000.dtbo \
+	BBORG_COMMS-00A2.dtbo \
+	BB-W1-P9.12-00A0.dtbo \
+	BB-UART4-00A0.dtbo \
+	BB-UART2-00A0.dtbo \
+	BB-UART1-00A0.dtbo \
+	BB-SPIDEV1-00A0.dtbo \
+	BB-SPIDEV0-00A0.dtbo \
+	BB-NHDMI-TDA998x-00A0.dtbo \
+	BB-LCD-ADAFRUIT-24-SPI1-00A0.dtbo \
+	BB-I2C2-MPU6050.dtbo \
+	BB-I2C2-BME680.dtbo \
+	BB-I2C1-RTC-PCF8563.dtbo \
+	BB-I2C1-RTC-DS3231.dtbo \
+	BB-I2C1-MCP7940X-00A0.dtbo \
+	BB-HDMI-TDA998x-00A0.dtbo \
+	BB-CAPE-DISP-CT4-00A0.dtbo \
+	BB-BONE-eMMC1-01-00A0.dtbo \
+	BB-BONE-NH7C-01-A0.dtbo \
+	BB-BONE-LCD4-01-00A1.dtbo \
+	BB-BONE-4D5R-01-00A1.dtbo \
+	BB-BBGW-WL1835-00A0.dtbo \
+	BB-BBGG-WL1835-00A0.dtbo \
+	BB-BBBW-WL1835-00A0.dtbo \
+	BB-ADC-00A0.dtbo \
+	AM335X-PRU-UIO-00A0.dtbo \
 	am335x-boneblack-wireless.dtb \
 	am335x-boneblue.dtb \
 	am335x-bonegreen.dtb \
@@ -130,16 +166,6 @@ dtb-$(CONFIG_SOC_AM43XX) += \
 
 am57xx-evm-dtbs := am57xx-beagle-x15.dtb am57xx-evm.dtbo
 am57xx-evm-reva3-dtbs := am57xx-beagle-x15-revc.dtb am57xx-evm.dtbo
-
-am571x-idk-overlays-dtbs := am571x-idk.dtb \
-	am571x-idk-touchscreen.dtbo am57xx-idk-lcd-osd101t2587.dtbo
-am572x-idk-overlays-dtbs := am572x-idk.dtb \
-	am572x-idk-touchscreen.dtbo am57xx-idk-lcd-osd101t2045.dtbo
-
-# Build time test only, enabled by CONFIG_OF_ALL_DTBS
-dtb- += \
-	am571x-idk-overlays.dtb \
-	am572x-idk-overlays.dtb
 
 dtb-$(CONFIG_SOC_DRA7XX) += \
 	am57xx-beagle-x15.dtb \

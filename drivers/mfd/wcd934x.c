@@ -109,10 +109,10 @@ static const struct regmap_range_cfg wcd934x_ranges[] = {
 	},
 };
 
-static const struct regmap_config wcd934x_regmap_config = {
+static struct regmap_config wcd934x_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.max_register = 0xffff,
 	.can_multi_write = true,
 	.ranges = wcd934x_ranges,

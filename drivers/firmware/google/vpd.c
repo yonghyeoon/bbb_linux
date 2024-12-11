@@ -306,22 +306,15 @@ static void vpd_remove(struct coreboot_device *dev)
 	kobject_put(vpd_kobj);
 }
 
-static const struct coreboot_device_id vpd_ids[] = {
-	{ .tag = CB_TAG_VPD },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(coreboot, vpd_ids);
-
 static struct coreboot_driver vpd_driver = {
 	.probe = vpd_probe,
 	.remove = vpd_remove,
 	.drv = {
 		.name = "vpd",
 	},
-	.id_table = vpd_ids,
+	.tag = CB_TAG_VPD,
 };
 module_coreboot_driver(vpd_driver);
 
 MODULE_AUTHOR("Google, Inc.");
-MODULE_DESCRIPTION("Driver for exporting Vital Product Data content to sysfs");
 MODULE_LICENSE("GPL");

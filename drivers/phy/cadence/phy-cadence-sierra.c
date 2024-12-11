@@ -174,9 +174,8 @@
 #define SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG		0x150
 #define SIERRA_DEQ_TAU_CTRL2_PREG			0x151
 #define SIERRA_DEQ_TAU_CTRL3_PREG			0x152
-#define SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG		0x158
+#define SIERRA_DEQ_OPENEYE_CTRL_PREG			0x158
 #define SIERRA_DEQ_CONCUR_EPIOFFSET_MODE_PREG		0x159
-#define SIERRA_DEQ_OPENEYE_CTRL_PREG			0x15C
 #define SIERRA_DEQ_PICTRL_PREG				0x161
 #define SIERRA_CPICAL_TMRVAL_MODE1_PREG			0x170
 #define SIERRA_CPICAL_TMRVAL_MODE0_PREG			0x171
@@ -311,7 +310,7 @@ static const struct clk_parent_data pll_mux_parent_data[][SIERRA_NUM_CMN_PLLC_PA
 	},
 };
 
-static const u32 cdns_sierra_pll_mux_table[][SIERRA_NUM_CMN_PLLC_PARENTS] = {
+static u32 cdns_sierra_pll_mux_table[][SIERRA_NUM_CMN_PLLC_PARENTS] = {
 	[CMN_PLLLC] = { 0, 1 },
 	[CMN_PLLLC1] = { 1, 0 },
 };
@@ -363,14 +362,14 @@ struct cdns_sierra_data {
 	u32 id_value;
 	u8 block_offset_shift;
 	u8 reg_offset_shift;
-	const struct cdns_sierra_vals *pcs_cmn_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
-						   [NUM_SSC_MODE];
-	const struct cdns_sierra_vals *phy_pma_ln_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
-						      [NUM_SSC_MODE];
-	const struct cdns_sierra_vals *pma_cmn_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
-						   [NUM_SSC_MODE];
-	const struct cdns_sierra_vals *pma_ln_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
-						  [NUM_SSC_MODE];
+	struct cdns_sierra_vals *pcs_cmn_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
+					     [NUM_SSC_MODE];
+	struct cdns_sierra_vals *phy_pma_ln_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
+						[NUM_SSC_MODE];
+	struct cdns_sierra_vals *pma_cmn_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
+					     [NUM_SSC_MODE];
+	struct cdns_sierra_vals *pma_ln_vals[NUM_PHY_TYPE][NUM_PHY_TYPE]
+					    [NUM_SSC_MODE];
 };
 
 struct cdns_regmap_cdb_context {
@@ -540,12 +539,12 @@ static int cdns_sierra_phy_init(struct phy *gphy)
 	struct cdns_sierra_inst *ins = phy_get_drvdata(gphy);
 	struct cdns_sierra_phy *phy = dev_get_drvdata(gphy->dev.parent);
 	const struct cdns_sierra_data *init_data = phy->init_data;
-	const struct cdns_sierra_vals *pma_cmn_vals, *pma_ln_vals;
+	struct cdns_sierra_vals *pma_cmn_vals, *pma_ln_vals;
 	enum cdns_sierra_phy_type phy_type = ins->phy_type;
-	const struct cdns_sierra_vals *phy_pma_ln_vals;
 	enum cdns_sierra_ssc_mode ssc = ins->ssc_mode;
-	const struct cdns_sierra_vals *pcs_cmn_vals;
+	struct cdns_sierra_vals *phy_pma_ln_vals;
 	const struct cdns_reg_pairs *reg_pairs;
+	struct cdns_sierra_vals *pcs_cmn_vals;
 	struct regmap *regmap;
 	u32 num_regs;
 	int i, j;
@@ -1245,12 +1244,12 @@ static int cdns_sierra_phy_get_resets(struct cdns_sierra_phy *sp,
 
 static int cdns_sierra_phy_configure_multilink(struct cdns_sierra_phy *sp)
 {
-	const struct cdns_sierra_vals *pma_cmn_vals, *pma_ln_vals;
 	const struct cdns_sierra_data *init_data = sp->init_data;
-	const struct cdns_sierra_vals *phy_pma_ln_vals;
-	const struct cdns_sierra_vals *pcs_cmn_vals;
+	struct cdns_sierra_vals *pma_cmn_vals, *pma_ln_vals;
 	enum cdns_sierra_phy_type phy_t1, phy_t2;
+	struct cdns_sierra_vals *phy_pma_ln_vals;
 	const struct cdns_reg_pairs *reg_pairs;
+	struct cdns_sierra_vals *pcs_cmn_vals;
 	int i, j, node, mlane, num_lanes, ret;
 	enum cdns_sierra_ssc_mode ssc;
 	struct regmap *regmap;
@@ -1367,7 +1366,7 @@ static int cdns_sierra_phy_probe(struct platform_device *pdev)
 	unsigned int id_value;
 	int ret, node = 0;
 	void __iomem *base;
-	struct device_node *dn = dev->of_node;
+	struct device_node *dn = dev->of_node, *child;
 
 	if (of_get_child_count(dn) == 0)
 		return -ENODEV;
@@ -1439,7 +1438,7 @@ static int cdns_sierra_phy_probe(struct platform_device *pdev)
 
 	sp->autoconf = of_property_read_bool(dn, "cdns,autoconf");
 
-	for_each_available_child_of_node_scoped(dn, child) {
+	for_each_available_child_of_node(dn, child) {
 		struct phy *gphy;
 
 		if (!(of_node_name_eq(child, "phy") ||
@@ -1453,6 +1452,7 @@ static int cdns_sierra_phy_probe(struct platform_device *pdev)
 			dev_err(dev, "failed to get reset %s\n",
 				child->full_name);
 			ret = PTR_ERR(sp->phys[node].lnk_rst);
+			of_node_put(child);
 			goto put_control;
 		}
 
@@ -1461,6 +1461,7 @@ static int cdns_sierra_phy_probe(struct platform_device *pdev)
 			if (ret) {
 				dev_err(dev, "missing property in node %s\n",
 					child->name);
+				of_node_put(child);
 				reset_control_put(sp->phys[node].lnk_rst);
 				goto put_control;
 			}
@@ -1474,6 +1475,7 @@ static int cdns_sierra_phy_probe(struct platform_device *pdev)
 			gphy = devm_phy_create(dev, child, &noop_ops);
 		if (IS_ERR(gphy)) {
 			ret = PTR_ERR(gphy);
+			of_node_put(child);
 			reset_control_put(sp->phys[node].lnk_rst);
 			goto put_control;
 		}
@@ -1542,11 +1544,11 @@ static void cdns_sierra_phy_remove(struct platform_device *pdev)
 }
 
 /* SGMII PHY PMA lane configuration */
-static const struct cdns_reg_pairs sgmii_phy_pma_ln_regs[] = {
+static struct cdns_reg_pairs sgmii_phy_pma_ln_regs[] = {
 	{0x9010, SIERRA_PHY_PMA_XCVR_CTRL}
 };
 
-static const struct cdns_sierra_vals sgmii_phy_pma_ln_vals = {
+static struct cdns_sierra_vals sgmii_phy_pma_ln_vals = {
 	.reg_pairs = sgmii_phy_pma_ln_regs,
 	.num_regs = ARRAY_SIZE(sgmii_phy_pma_ln_regs),
 };
@@ -1596,22 +1598,22 @@ static const struct cdns_reg_pairs sgmii_100_no_ssc_plllc1_opt3_ln_regs[] = {
 	{0x0002, SIERRA_RXBUFFER_RCDFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals sgmii_100_no_ssc_plllc1_opt3_cmn_vals = {
+static struct cdns_sierra_vals sgmii_100_no_ssc_plllc1_opt3_cmn_vals = {
 	.reg_pairs = sgmii_100_no_ssc_plllc1_opt3_cmn_regs,
 	.num_regs = ARRAY_SIZE(sgmii_100_no_ssc_plllc1_opt3_cmn_regs),
 };
 
-static const struct cdns_sierra_vals sgmii_100_no_ssc_plllc1_opt3_ln_vals = {
+static struct cdns_sierra_vals sgmii_100_no_ssc_plllc1_opt3_ln_vals = {
 	.reg_pairs = sgmii_100_no_ssc_plllc1_opt3_ln_regs,
 	.num_regs = ARRAY_SIZE(sgmii_100_no_ssc_plllc1_opt3_ln_regs),
 };
 
 /* QSGMII PHY PMA lane configuration */
-static const struct cdns_reg_pairs qsgmii_phy_pma_ln_regs[] = {
+static struct cdns_reg_pairs qsgmii_phy_pma_ln_regs[] = {
 	{0x9010, SIERRA_PHY_PMA_XCVR_CTRL}
 };
 
-static const struct cdns_sierra_vals qsgmii_phy_pma_ln_vals = {
+static struct cdns_sierra_vals qsgmii_phy_pma_ln_vals = {
 	.reg_pairs = qsgmii_phy_pma_ln_regs,
 	.num_regs = ARRAY_SIZE(qsgmii_phy_pma_ln_regs),
 };
@@ -1662,22 +1664,22 @@ static const struct cdns_reg_pairs qsgmii_100_no_ssc_plllc1_ln_regs[] = {
 	{0x0002, SIERRA_RXBUFFER_RCDFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals qsgmii_100_no_ssc_plllc1_cmn_vals = {
+static struct cdns_sierra_vals qsgmii_100_no_ssc_plllc1_cmn_vals = {
 	.reg_pairs = qsgmii_100_no_ssc_plllc1_cmn_regs,
 	.num_regs = ARRAY_SIZE(qsgmii_100_no_ssc_plllc1_cmn_regs),
 };
 
-static const struct cdns_sierra_vals qsgmii_100_no_ssc_plllc1_ln_vals = {
+static struct cdns_sierra_vals qsgmii_100_no_ssc_plllc1_ln_vals = {
 	.reg_pairs = qsgmii_100_no_ssc_plllc1_ln_regs,
 	.num_regs = ARRAY_SIZE(qsgmii_100_no_ssc_plllc1_ln_regs),
 };
 
 /* PCIE PHY PCS common configuration */
-static const struct cdns_reg_pairs pcie_phy_pcs_cmn_regs[] = {
+static struct cdns_reg_pairs pcie_phy_pcs_cmn_regs[] = {
 	{0x0430, SIERRA_PHY_PIPE_CMN_CTRL1}
 };
 
-static const struct cdns_sierra_vals pcie_phy_pcs_cmn_vals = {
+static struct cdns_sierra_vals pcie_phy_pcs_cmn_vals = {
 	.reg_pairs = pcie_phy_pcs_cmn_regs,
 	.num_regs = ARRAY_SIZE(pcie_phy_pcs_cmn_regs),
 };
@@ -1734,7 +1736,7 @@ static const struct cdns_reg_pairs ml_pcie_100_no_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -1743,12 +1745,12 @@ static const struct cdns_reg_pairs ml_pcie_100_no_ssc_ln_regs[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_no_ssc_plllc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_no_ssc_plllc_cmn_vals = {
 	.reg_pairs = pcie_100_no_ssc_plllc_cmn_regs,
 	.num_regs = ARRAY_SIZE(pcie_100_no_ssc_plllc_cmn_regs),
 };
 
-static const struct cdns_sierra_vals ml_pcie_100_no_ssc_ln_vals = {
+static struct cdns_sierra_vals ml_pcie_100_no_ssc_ln_vals = {
 	.reg_pairs = ml_pcie_100_no_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ml_pcie_100_no_ssc_ln_regs),
 };
@@ -1798,7 +1800,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_no_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -1808,7 +1810,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_no_ssc_ln_regs[] = {
 	{0x0002, SIERRA_TX_RCVDET_OVRD_PREG}
 };
 
-static const struct cdns_sierra_vals ti_ml_pcie_100_no_ssc_ln_vals = {
+static struct cdns_sierra_vals ti_ml_pcie_100_no_ssc_ln_vals = {
 	.reg_pairs = ti_ml_pcie_100_no_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ti_ml_pcie_100_no_ssc_ln_regs),
 };
@@ -1875,7 +1877,7 @@ static const struct cdns_reg_pairs ml_pcie_100_int_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -1884,12 +1886,12 @@ static const struct cdns_reg_pairs ml_pcie_100_int_ssc_ln_regs[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_int_ssc_plllc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_int_ssc_plllc_cmn_vals = {
 	.reg_pairs = pcie_100_int_ssc_plllc_cmn_regs,
 	.num_regs = ARRAY_SIZE(pcie_100_int_ssc_plllc_cmn_regs),
 };
 
-static const struct cdns_sierra_vals ml_pcie_100_int_ssc_ln_vals = {
+static struct cdns_sierra_vals ml_pcie_100_int_ssc_ln_vals = {
 	.reg_pairs = ml_pcie_100_int_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ml_pcie_100_int_ssc_ln_regs),
 };
@@ -1942,7 +1944,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_int_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -1952,7 +1954,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_int_ssc_ln_regs[] = {
 	{0x0002, SIERRA_TX_RCVDET_OVRD_PREG}
 };
 
-static const struct cdns_sierra_vals ti_ml_pcie_100_int_ssc_ln_vals = {
+static struct cdns_sierra_vals ti_ml_pcie_100_int_ssc_ln_vals = {
 	.reg_pairs = ti_ml_pcie_100_int_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ti_ml_pcie_100_int_ssc_ln_regs),
 };
@@ -2013,7 +2015,7 @@ static const struct cdns_reg_pairs ml_pcie_100_ext_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -2022,12 +2024,12 @@ static const struct cdns_reg_pairs ml_pcie_100_ext_ssc_ln_regs[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_ext_ssc_plllc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_ext_ssc_plllc_cmn_vals = {
 	.reg_pairs = pcie_100_ext_ssc_plllc_cmn_regs,
 	.num_regs = ARRAY_SIZE(pcie_100_ext_ssc_plllc_cmn_regs),
 };
 
-static const struct cdns_sierra_vals ml_pcie_100_ext_ssc_ln_vals = {
+static struct cdns_sierra_vals ml_pcie_100_ext_ssc_ln_vals = {
 	.reg_pairs = ml_pcie_100_ext_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ml_pcie_100_ext_ssc_ln_regs),
 };
@@ -2080,7 +2082,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_ext_ssc_ln_regs[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -2090,7 +2092,7 @@ static const struct cdns_reg_pairs ti_ml_pcie_100_ext_ssc_ln_regs[] = {
 	{0x0002, SIERRA_TX_RCVDET_OVRD_PREG}
 };
 
-static const struct cdns_sierra_vals ti_ml_pcie_100_ext_ssc_ln_vals = {
+static struct cdns_sierra_vals ti_ml_pcie_100_ext_ssc_ln_vals = {
 	.reg_pairs = ti_ml_pcie_100_ext_ssc_ln_regs,
 	.num_regs = ARRAY_SIZE(ti_ml_pcie_100_ext_ssc_ln_regs),
 };
@@ -2141,7 +2143,7 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_no_ssc[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -2150,12 +2152,12 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_no_ssc[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_no_ssc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_no_ssc_cmn_vals = {
 	.reg_pairs = cdns_pcie_cmn_regs_no_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_cmn_regs_no_ssc),
 };
 
-static const struct cdns_sierra_vals pcie_100_no_ssc_ln_vals = {
+static struct cdns_sierra_vals pcie_100_no_ssc_ln_vals = {
 	.reg_pairs = cdns_pcie_ln_regs_no_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_ln_regs_no_ssc),
 };
@@ -2216,7 +2218,7 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_int_ssc[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -2225,12 +2227,12 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_int_ssc[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_int_ssc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_int_ssc_cmn_vals = {
 	.reg_pairs = cdns_pcie_cmn_regs_int_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_cmn_regs_int_ssc),
 };
 
-static const struct cdns_sierra_vals pcie_100_int_ssc_ln_vals = {
+static struct cdns_sierra_vals pcie_100_int_ssc_ln_vals = {
 	.reg_pairs = cdns_pcie_ln_regs_int_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_ln_regs_int_ssc),
 };
@@ -2285,7 +2287,7 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_ext_ssc[] = {
 	{0x3C0F, SIERRA_DEQ_TAU_CTRL1_SLOW_MAINT_PREG},
 	{0x1C0C, SIERRA_DEQ_TAU_CTRL2_PREG},
 	{0x0100, SIERRA_DEQ_TAU_CTRL3_PREG},
-	{0x5E82, SIERRA_DEQ_TAU_EPIOFFSET_MODE_PREG},
+	{0x5E82, SIERRA_DEQ_OPENEYE_CTRL_PREG},
 	{0x002B, SIERRA_CPI_TRIM_PREG},
 	{0x0003, SIERRA_EPI_CTRL_PREG},
 	{0x803F, SIERRA_SDFILT_H2L_A_PREG},
@@ -2294,12 +2296,12 @@ static const struct cdns_reg_pairs cdns_pcie_ln_regs_ext_ssc[] = {
 	{0x4432, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals pcie_100_ext_ssc_cmn_vals = {
+static struct cdns_sierra_vals pcie_100_ext_ssc_cmn_vals = {
 	.reg_pairs = cdns_pcie_cmn_regs_ext_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_cmn_regs_ext_ssc),
 };
 
-static const struct cdns_sierra_vals pcie_100_ext_ssc_ln_vals = {
+static struct cdns_sierra_vals pcie_100_ext_ssc_ln_vals = {
 	.reg_pairs = cdns_pcie_ln_regs_ext_ssc,
 	.num_regs = ARRAY_SIZE(cdns_pcie_ln_regs_ext_ssc),
 };
@@ -2411,12 +2413,12 @@ static const struct cdns_reg_pairs cdns_usb_ln_regs_ext_ssc[] = {
 	{0x4243, SIERRA_RXBUFFER_DFECTRL_PREG}
 };
 
-static const struct cdns_sierra_vals usb_100_ext_ssc_cmn_vals = {
+static struct cdns_sierra_vals usb_100_ext_ssc_cmn_vals = {
 	.reg_pairs = cdns_usb_cmn_regs_ext_ssc,
 	.num_regs = ARRAY_SIZE(cdns_usb_cmn_regs_ext_ssc),
 };
 
-static const struct cdns_sierra_vals usb_100_ext_ssc_ln_vals = {
+static struct cdns_sierra_vals usb_100_ext_ssc_ln_vals = {
 	.reg_pairs = cdns_usb_ln_regs_ext_ssc,
 	.num_regs = ARRAY_SIZE(cdns_usb_ln_regs_ext_ssc),
 };
@@ -2441,7 +2443,7 @@ static const struct cdns_reg_pairs sgmii_pma_cmn_vals[] = {
 	{0x0013, SIERRA_CMN_PLLLC1_DCOCAL_CTRL_PREG},
 };
 
-static const struct cdns_sierra_vals sgmii_cmn_vals = {
+static struct cdns_sierra_vals sgmii_cmn_vals = {
 	.reg_pairs = sgmii_pma_cmn_vals,
 	.num_regs = ARRAY_SIZE(sgmii_pma_cmn_vals),
 };
@@ -2487,7 +2489,7 @@ static const struct cdns_reg_pairs sgmii_ln_regs[] = {
 	{0x321F, SIERRA_CPICAL_RES_STARTCODE_MODE01_PREG},
 };
 
-static const struct cdns_sierra_vals sgmii_pma_ln_vals = {
+static struct cdns_sierra_vals sgmii_pma_ln_vals = {
 	.reg_pairs = sgmii_ln_regs,
 	.num_regs = ARRAY_SIZE(sgmii_ln_regs),
 };

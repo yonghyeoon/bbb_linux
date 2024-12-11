@@ -8,7 +8,6 @@
 
 #include <linux/buffer_head.h>
 #include <linux/mount.h>
-#include <linux/mpage.h>
 #include <linux/string.h>
 #include "sysv.h"
 
@@ -422,7 +421,7 @@ do_indirects:
 		}
 		n++;
 	}
-	inode_set_mtime_to_ts(inode, inode_set_ctime_current(inode));
+	inode->i_mtime = inode_set_ctime_current(inode);
 	if (IS_SYNC(inode))
 		sysv_sync_inode (inode);
 	else
@@ -455,10 +454,9 @@ int sysv_getattr(struct mnt_idmap *idmap, const struct path *path,
 	return 0;
 }
 
-static int sysv_writepages(struct address_space *mapping,
-		struct writeback_control *wbc)
+static int sysv_writepage(struct page *page, struct writeback_control *wbc)
 {
-	return mpage_writepages(mapping, wbc, get_block);
+	return block_write_full_page(page,get_block,wbc);
 }
 
 static int sysv_read_folio(struct file *file, struct folio *folio)
@@ -466,9 +464,9 @@ static int sysv_read_folio(struct file *file, struct folio *folio)
 	return block_read_full_folio(folio, get_block);
 }
 
-int sysv_prepare_chunk(struct folio *folio, loff_t pos, unsigned len)
+int sysv_prepare_chunk(struct page *page, loff_t pos, unsigned len)
 {
-	return __block_write_begin(folio, pos, len, get_block);
+	return __block_write_begin(page, pos, len, get_block);
 }
 
 static void sysv_write_failed(struct address_space *mapping, loff_t to)
@@ -483,11 +481,11 @@ static void sysv_write_failed(struct address_space *mapping, loff_t to)
 
 static int sysv_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct folio **foliop, void **fsdata)
+			struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, foliop, get_block);
+	ret = block_write_begin(mapping, pos, len, pagep, get_block);
 	if (unlikely(ret))
 		sysv_write_failed(mapping, pos + len);
 
@@ -503,9 +501,8 @@ const struct address_space_operations sysv_aops = {
 	.dirty_folio = block_dirty_folio,
 	.invalidate_folio = block_invalidate_folio,
 	.read_folio = sysv_read_folio,
-	.writepages = sysv_writepages,
+	.writepage = sysv_writepage,
 	.write_begin = sysv_write_begin,
 	.write_end = generic_write_end,
-	.migrate_folio = buffer_migrate_folio,
 	.bmap = sysv_bmap
 };

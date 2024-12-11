@@ -196,6 +196,8 @@ enum rgmii_clock_delay {
 #define MSCC_PHY_EXTENDED_INT_MS_EGR	  BIT(9)
 
 /* Extended Page 3 Registers */
+#define MSCC_PHY_SERDES_PCS_CTRL          16
+#define MSCC_PHY_SERDES_ANEG              BIT(7)
 #define MSCC_PHY_SERDES_TX_VALID_CNT	  21
 #define MSCC_PHY_SERDES_TX_CRC_ERR_CNT	  22
 #define MSCC_PHY_SERDES_RX_VALID_CNT	  28
@@ -416,11 +418,6 @@ struct vsc8531_private {
  * gpio_lock: used for PHC operations. Common for all PHYs as the load/save GPIO
  * is shared.
  */
-
-enum vsc85xx_global_phy {
-	VSC88XX_BASE_ADDR = 0,
-};
-
 struct vsc85xx_shared_private {
 	struct mutex gpio_lock;
 };

@@ -22,7 +22,6 @@
 #include <net/tcp.h>
 #include <net/xfrm.h>
 #include <net/busy_poll.h>
-#include <net/rstreason.h>
 
 static bool tcp_in_window(u32 seq, u32 end_seq, u32 s_win, u32 e_win)
 {
@@ -50,19 +49,6 @@ tcp_timewait_check_oow_rate_limit(struct inet_timewait_sock *tw,
 	/* We are rate-limiting, so just release the tw sock and drop skb. */
 	inet_twsk_put(tw);
 	return TCP_TW_SUCCESS;
-}
-
-static void twsk_rcv_nxt_update(struct tcp_timewait_sock *tcptw, u32 seq,
-				u32 rcv_nxt)
-{
-#ifdef CONFIG_TCP_AO
-	struct tcp_ao_info *ao;
-
-	ao = rcu_dereference(tcptw->ao_info);
-	if (unlikely(ao && seq < rcv_nxt))
-		WRITE_ONCE(ao->rcv_sne, ao->rcv_sne + 1);
-#endif
-	WRITE_ONCE(tcptw->tw_rcv_nxt, seq);
 }
 
 /*
@@ -97,48 +83,45 @@ static void twsk_rcv_nxt_update(struct tcp_timewait_sock *tcptw, u32 seq,
  */
 enum tcp_tw_status
 tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
-			   const struct tcphdr *th, u32 *tw_isn)
+			   const struct tcphdr *th)
 {
-	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
-	u32 rcv_nxt = READ_ONCE(tcptw->tw_rcv_nxt);
 	struct tcp_options_received tmp_opt;
+	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
 	bool paws_reject = false;
-	int ts_recent_stamp;
 
 	tmp_opt.saw_tstamp = 0;
-	ts_recent_stamp = READ_ONCE(tcptw->tw_ts_recent_stamp);
-	if (th->doff > (sizeof(*th) >> 2) && ts_recent_stamp) {
+	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
 		tcp_parse_options(twsk_net(tw), skb, &tmp_opt, 0, NULL);
 
 		if (tmp_opt.saw_tstamp) {
 			if (tmp_opt.rcv_tsecr)
 				tmp_opt.rcv_tsecr -= tcptw->tw_ts_offset;
-			tmp_opt.ts_recent	= READ_ONCE(tcptw->tw_ts_recent);
-			tmp_opt.ts_recent_stamp	= ts_recent_stamp;
+			tmp_opt.ts_recent	= tcptw->tw_ts_recent;
+			tmp_opt.ts_recent_stamp	= tcptw->tw_ts_recent_stamp;
 			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
 		}
 	}
 
-	if (READ_ONCE(tw->tw_substate) == TCP_FIN_WAIT2) {
+	if (tw->tw_substate == TCP_FIN_WAIT2) {
 		/* Just repeat all the checks of tcp_rcv_state_process() */
 
 		/* Out of window, send ACK */
 		if (paws_reject ||
 		    !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq,
-				   rcv_nxt,
-				   rcv_nxt + tcptw->tw_rcv_wnd))
+				   tcptw->tw_rcv_nxt,
+				   tcptw->tw_rcv_nxt + tcptw->tw_rcv_wnd))
 			return tcp_timewait_check_oow_rate_limit(
 				tw, skb, LINUX_MIB_TCPACKSKIPPEDFINWAIT2);
 
 		if (th->rst)
 			goto kill;
 
-		if (th->syn && !before(TCP_SKB_CB(skb)->seq, rcv_nxt))
+		if (th->syn && !before(TCP_SKB_CB(skb)->seq, tcptw->tw_rcv_nxt))
 			return TCP_TW_RST;
 
 		/* Dup ACK? */
 		if (!th->ack ||
-		    !after(TCP_SKB_CB(skb)->end_seq, rcv_nxt) ||
+		    !after(TCP_SKB_CB(skb)->end_seq, tcptw->tw_rcv_nxt) ||
 		    TCP_SKB_CB(skb)->end_seq == TCP_SKB_CB(skb)->seq) {
 			inet_twsk_put(tw);
 			return TCP_TW_SUCCESS;
@@ -148,19 +131,15 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 		 * reset.
 		 */
 		if (!th->fin ||
-		    TCP_SKB_CB(skb)->end_seq != rcv_nxt + 1)
+		    TCP_SKB_CB(skb)->end_seq != tcptw->tw_rcv_nxt + 1)
 			return TCP_TW_RST;
 
 		/* FIN arrived, enter true time-wait state. */
-		WRITE_ONCE(tw->tw_substate, TCP_TIME_WAIT);
-		twsk_rcv_nxt_update(tcptw, TCP_SKB_CB(skb)->end_seq,
-				    rcv_nxt);
-
+		tw->tw_substate	  = TCP_TIME_WAIT;
+		tcptw->tw_rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 		if (tmp_opt.saw_tstamp) {
-			WRITE_ONCE(tcptw->tw_ts_recent_stamp,
-				  ktime_get_seconds());
-			WRITE_ONCE(tcptw->tw_ts_recent,
-				   tmp_opt.rcv_tsval);
+			tcptw->tw_ts_recent_stamp = ktime_get_seconds();
+			tcptw->tw_ts_recent	  = tmp_opt.rcv_tsval;
 		}
 
 		inet_twsk_reschedule(tw, TCP_TIMEWAIT_LEN);
@@ -185,7 +164,7 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 	 */
 
 	if (!paws_reject &&
-	    (TCP_SKB_CB(skb)->seq == rcv_nxt &&
+	    (TCP_SKB_CB(skb)->seq == tcptw->tw_rcv_nxt &&
 	     (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq || th->rst))) {
 		/* In window segment, it may be only reset or bare ack. */
 
@@ -204,10 +183,8 @@ kill:
 		}
 
 		if (tmp_opt.saw_tstamp) {
-			WRITE_ONCE(tcptw->tw_ts_recent,
-				   tmp_opt.rcv_tsval);
-			WRITE_ONCE(tcptw->tw_ts_recent_stamp,
-				   ktime_get_seconds());
+			tcptw->tw_ts_recent	  = tmp_opt.rcv_tsval;
+			tcptw->tw_ts_recent_stamp = ktime_get_seconds();
 		}
 
 		inet_twsk_put(tw);
@@ -232,13 +209,13 @@ kill:
 	 */
 
 	if (th->syn && !th->rst && !th->ack && !paws_reject &&
-	    (after(TCP_SKB_CB(skb)->seq, rcv_nxt) ||
+	    (after(TCP_SKB_CB(skb)->seq, tcptw->tw_rcv_nxt) ||
 	     (tmp_opt.saw_tstamp &&
-	      (s32)(READ_ONCE(tcptw->tw_ts_recent) - tmp_opt.rcv_tsval) < 0))) {
+	      (s32)(tcptw->tw_ts_recent - tmp_opt.rcv_tsval) < 0))) {
 		u32 isn = tcptw->tw_snd_nxt + 65535 + 2;
 		if (isn == 0)
 			isn++;
-		*tw_isn = isn;
+		TCP_SKB_CB(skb)->tcp_tw_isn = isn;
 		return TCP_TW_SYN;
 	}
 
@@ -284,9 +261,10 @@ static void tcp_time_wait_init(struct sock *sk, struct tcp_timewait_sock *tcptw)
 		tcptw->tw_md5_key = kmemdup(key, sizeof(*key), GFP_ATOMIC);
 		if (!tcptw->tw_md5_key)
 			return;
+		if (!tcp_alloc_md5sig_pool())
+			goto out_free;
 		if (!static_key_fast_inc_not_disabled(&tcp_md5_needed.key.key))
 			goto out_free;
-		tcp_md5_add_sigpool();
 	}
 	return;
 out_free:
@@ -302,7 +280,7 @@ out_free:
 void tcp_time_wait(struct sock *sk, int state, int timeo)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
-	struct tcp_sock *tp = tcp_sk(sk);
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct net *net = sock_net(sk);
 	struct inet_timewait_sock *tw;
 
@@ -314,7 +292,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 
 		tw->tw_transparent	= inet_test_bit(TRANSPARENT, sk);
 		tw->tw_mark		= sk->sk_mark;
-		tw->tw_priority		= READ_ONCE(sk->sk_priority);
+		tw->tw_priority		= sk->sk_priority;
 		tw->tw_rcv_wscale	= tp->rx_opt.rcv_wscale;
 		tcptw->tw_rcv_nxt	= tp->rcv_nxt;
 		tcptw->tw_snd_nxt	= tp->snd_nxt;
@@ -322,7 +300,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		tcptw->tw_ts_recent	= tp->rx_opt.ts_recent;
 		tcptw->tw_ts_recent_stamp = tp->rx_opt.ts_recent_stamp;
 		tcptw->tw_ts_offset	= tp->tsoffset;
-		tw->tw_usec_ts		= tp->tcp_usec_ts;
 		tcptw->tw_last_oow_ack_time = 0;
 		tcptw->tw_tx_delay	= tp->tcp_tx_delay;
 		tw->tw_txhash		= sk->sk_txhash;
@@ -339,7 +316,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 #endif
 
 		tcp_time_wait_init(sk, tcptw);
-		tcp_ao_time_wait(tcptw, tp);
 
 		/* Get the TIME_WAIT timeout firing. */
 		if (timeo < rto)
@@ -348,10 +324,17 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		if (state == TCP_TIME_WAIT)
 			timeo = TCP_TIMEWAIT_LEN;
 
+		/* tw_timer is pinned, so we need to make sure BH are disabled
+		 * in following section, otherwise timer handler could run before
+		 * we complete the initialization.
+		 */
+		local_bh_disable();
+		inet_twsk_schedule(tw, timeo);
 		/* Linkage updates.
 		 * Note that access to tw after this point is illegal.
 		 */
-		inet_twsk_hashdance_schedule(tw, sk, net->ipv4.tcp_death_row.hashinfo, timeo);
+		inet_twsk_hashdance(tw, sk, net->ipv4.tcp_death_row.hashinfo);
+		local_bh_enable();
 	} else {
 		/* Sorry, if we're out of memory, just CLOSE this
 		 * socket up.  We've got bigger problems than
@@ -365,33 +348,22 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 }
 EXPORT_SYMBOL(tcp_time_wait);
 
-#ifdef CONFIG_TCP_MD5SIG
-static void tcp_md5_twsk_free_rcu(struct rcu_head *head)
-{
-	struct tcp_md5sig_key *key;
-
-	key = container_of(head, struct tcp_md5sig_key, rcu);
-	kfree(key);
-	static_branch_slow_dec_deferred(&tcp_md5_needed);
-	tcp_md5_release_sigpool();
-}
-#endif
-
 void tcp_twsk_destructor(struct sock *sk)
 {
 #ifdef CONFIG_TCP_MD5SIG
 	if (static_branch_unlikely(&tcp_md5_needed.key)) {
 		struct tcp_timewait_sock *twsk = tcp_twsk(sk);
 
-		if (twsk->tw_md5_key)
-			call_rcu(&twsk->tw_md5_key->rcu, tcp_md5_twsk_free_rcu);
+		if (twsk->tw_md5_key) {
+			kfree_rcu(twsk->tw_md5_key, rcu);
+			static_branch_slow_dec_deferred(&tcp_md5_needed);
+		}
 	}
 #endif
-	tcp_ao_destroy_sock(sk, true);
 }
 EXPORT_SYMBOL_GPL(tcp_twsk_destructor);
 
-void tcp_twsk_purge(struct list_head *net_exit_list)
+void tcp_twsk_purge(struct list_head *net_exit_list, int family)
 {
 	bool purged_once = false;
 	struct net *net;
@@ -399,13 +371,14 @@ void tcp_twsk_purge(struct list_head *net_exit_list)
 	list_for_each_entry(net, net_exit_list, exit_list) {
 		if (net->ipv4.tcp_death_row.hashinfo->pernet) {
 			/* Even if tw_refcount == 1, we must clean up kernel reqsk */
-			inet_twsk_purge(net->ipv4.tcp_death_row.hashinfo);
+			inet_twsk_purge(net->ipv4.tcp_death_row.hashinfo, family);
 		} else if (!purged_once) {
-			inet_twsk_purge(&tcp_hashinfo);
+			inet_twsk_purge(&tcp_hashinfo, family);
 			purged_once = true;
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(tcp_twsk_purge);
 
 /* Warning : This function is called without sk_listener being locked.
  * Be sure to read socket fields once, as their value could change under us.
@@ -577,45 +550,22 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 	newtp->max_window = newtp->snd_wnd;
 
 	if (newtp->rx_opt.tstamp_ok) {
-		newtp->tcp_usec_ts = treq->req_usec_ts;
 		newtp->rx_opt.ts_recent = READ_ONCE(req->ts_recent);
 		newtp->rx_opt.ts_recent_stamp = ktime_get_seconds();
 		newtp->tcp_header_len = sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED;
 	} else {
-		newtp->tcp_usec_ts = 0;
 		newtp->rx_opt.ts_recent_stamp = 0;
 		newtp->tcp_header_len = sizeof(struct tcphdr);
 	}
 	if (req->num_timeout) {
-		newtp->total_rto = req->num_timeout;
 		newtp->undo_marker = treq->snt_isn;
-		if (newtp->tcp_usec_ts) {
-			newtp->retrans_stamp = treq->snt_synack;
-			newtp->total_rto_time = (u32)(tcp_clock_us() -
-						      newtp->retrans_stamp) / USEC_PER_MSEC;
-		} else {
-			newtp->retrans_stamp = div_u64(treq->snt_synack,
-						       USEC_PER_SEC / TCP_TS_HZ);
-			newtp->total_rto_time = tcp_clock_ms() -
-						newtp->retrans_stamp;
-		}
-		newtp->total_rto_recoveries = 1;
+		newtp->retrans_stamp = div_u64(treq->snt_synack,
+					       USEC_PER_SEC / TCP_TS_HZ);
 	}
 	newtp->tsoffset = treq->ts_off;
 #ifdef CONFIG_TCP_MD5SIG
 	newtp->md5sig_info = NULL;	/*XXX*/
 #endif
-#ifdef CONFIG_TCP_AO
-	newtp->ao_info = NULL;
-
-	if (tcp_rsk_used_ao(req)) {
-		struct tcp_ao_key *ao_key;
-
-		ao_key = treq->af_specific->ao_lookup(sk, req, tcp_rsk(req)->ao_keyid, -1);
-		if (ao_key)
-			newtp->tcp_header_len += tcp_ao_len_aligned(ao_key);
-	}
- #endif
 	if (skb->len >= TCP_MSS_DEFAULT + newtp->tcp_header_len)
 		newicsk->icsk_ack.last_seg_size = skb->len - newtp->tcp_header_len;
 	newtp->rx_opt.mss_clamp = req->mss;
@@ -627,8 +577,6 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 	tcp_bpf_clone(sk, newsk);
 
 	__TCP_INC_STATS(sock_net(sk), TCP_MIB_PASSIVEOPENS);
-
-	xa_init_flags(&newsk->sk_user_frags, XA_FLAGS_ALLOC1);
 
 	return newsk;
 }
@@ -788,11 +736,8 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* RFC793: "first check sequence number". */
 
-	if (paws_reject || !tcp_in_window(TCP_SKB_CB(skb)->seq,
-					  TCP_SKB_CB(skb)->end_seq,
-					  tcp_rsk(req)->rcv_nxt,
-					  tcp_rsk(req)->rcv_nxt +
-					  tcp_synack_window(req))) {
+	if (paws_reject || !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq,
+					  tcp_rsk(req)->rcv_nxt, tcp_rsk(req)->rcv_nxt + req->rsk_rcv_wnd)) {
 		/* Out of window: send ACK and drop. */
 		if (!(flg & TCP_FLAG_RST) &&
 		    !tcp_oow_rate_limited(sock_net(sk), skb,
@@ -887,7 +832,7 @@ embryonic_reset:
 		 * avoid becoming vulnerable to outside attack aiming at
 		 * resetting legit local connections.
 		 */
-		req->rsk_ops->send_reset(sk, skb, SK_RST_REASON_INVALID_SYN);
+		req->rsk_ops->send_reset(sk, skb);
 	} else if (fastopen) { /* received a valid RST pkt */
 		reqsk_fastopen_remove(sk, req, true);
 		tcp_reset(sk, skb);
@@ -915,11 +860,11 @@ EXPORT_SYMBOL(tcp_check_req);
  * be created.
  */
 
-enum skb_drop_reason tcp_child_process(struct sock *parent, struct sock *child,
-				       struct sk_buff *skb)
+int tcp_child_process(struct sock *parent, struct sock *child,
+		      struct sk_buff *skb)
 	__releases(&((child)->sk_lock.slock))
 {
-	enum skb_drop_reason reason = SKB_NOT_DROPPED_YET;
+	int ret = 0;
 	int state = child->sk_state;
 
 	/* record sk_napi_id and sk_rx_queue_mapping of child. */
@@ -927,7 +872,7 @@ enum skb_drop_reason tcp_child_process(struct sock *parent, struct sock *child,
 
 	tcp_segs_in(tcp_sk(child), skb);
 	if (!sock_owned_by_user(child)) {
-		reason = tcp_rcv_state_process(child, skb);
+		ret = tcp_rcv_state_process(child, skb);
 		/* Wakeup parent, send SIGIO */
 		if (state == TCP_SYN_RECV && child->sk_state != state)
 			parent->sk_data_ready(parent);
@@ -941,6 +886,6 @@ enum skb_drop_reason tcp_child_process(struct sock *parent, struct sock *child,
 
 	bh_unlock_sock(child);
 	sock_put(child);
-	return reason;
+	return ret;
 }
 EXPORT_SYMBOL(tcp_child_process);

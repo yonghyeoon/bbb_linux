@@ -5,8 +5,7 @@
  * Copyright (C) 2020-2023 Loongson Technology Corporation Limited
  */
 
-static int loongarch_call__parse(struct arch *arch, struct ins_operands *ops, struct map_symbol *ms,
-		struct disasm_line *dl __maybe_unused)
+static int loongarch_call__parse(struct arch *arch, struct ins_operands *ops, struct map_symbol *ms)
 {
 	char *c, *endptr, *tok, *name;
 	struct map *map = ms->map;
@@ -52,8 +51,7 @@ static struct ins_ops loongarch_call_ops = {
 	.scnprintf = call__scnprintf,
 };
 
-static int loongarch_jump__parse(struct arch *arch, struct ins_operands *ops, struct map_symbol *ms,
-		struct disasm_line *dl __maybe_unused)
+static int loongarch_jump__parse(struct arch *arch, struct ins_operands *ops, struct map_symbol *ms)
 {
 	struct map *map = ms->map;
 	struct symbol *sym = ms->sym;
@@ -63,10 +61,10 @@ static int loongarch_jump__parse(struct arch *arch, struct ins_operands *ops, st
 	const char *c = strchr(ops->raw, '#');
 	u64 start, end;
 
-	ops->jump.raw_comment = strchr(ops->raw, arch->objdump.comment_char);
-	ops->jump.raw_func_start = strchr(ops->raw, '<');
+	ops->raw_comment = strchr(ops->raw, arch->objdump.comment_char);
+	ops->raw_func_start = strchr(ops->raw, '<');
 
-	if (ops->jump.raw_func_start && c > ops->jump.raw_func_start)
+	if (ops->raw_func_start && c > ops->raw_func_start)
 		c = NULL;
 
 	if (c++ != NULL)

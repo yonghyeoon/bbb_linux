@@ -466,7 +466,6 @@ struct host1x_memory_context {
 	refcount_t ref;
 	struct pid *owner;
 
-	struct device_dma_parameters dma_parms;
 	struct device dev;
 	u64 dma_mask;
 	u32 stream_id;

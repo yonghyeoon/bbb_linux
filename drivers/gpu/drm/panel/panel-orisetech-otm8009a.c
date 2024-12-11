@@ -70,6 +70,7 @@ struct otm8009a {
 	struct gpio_desc *reset_gpio;
 	struct regulator *supply;
 	bool prepared;
+	bool enabled;
 };
 
 static const struct drm_display_mode modes[] = {
@@ -266,6 +267,9 @@ static int otm8009a_disable(struct drm_panel *panel)
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
 
+	if (!ctx->enabled)
+		return 0; /* This is not an issue so we return 0 here */
+
 	backlight_disable(ctx->bl_dev);
 
 	ret = mipi_dsi_dcs_set_display_off(dsi);
@@ -278,12 +282,17 @@ static int otm8009a_disable(struct drm_panel *panel)
 
 	msleep(120);
 
+	ctx->enabled = false;
+
 	return 0;
 }
 
 static int otm8009a_unprepare(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
+
+	if (!ctx->prepared)
+		return 0;
 
 	if (ctx->reset_gpio) {
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
@@ -301,6 +310,9 @@ static int otm8009a_prepare(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
 	int ret;
+
+	if (ctx->prepared)
+		return 0;
 
 	ret = regulator_enable(ctx->supply);
 	if (ret < 0) {
@@ -329,7 +341,12 @@ static int otm8009a_enable(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
 
+	if (ctx->enabled)
+		return 0;
+
 	backlight_enable(ctx->bl_dev);
+
+	ctx->enabled = true;
 
 	return 0;
 }
@@ -389,7 +406,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
 		return -ENXIO;
 	}
 
-	if (bd->props.power <= BACKLIGHT_POWER_REDUCED) {
+	if (bd->props.power <= FB_BLANK_NORMAL) {
 		/* Power on the backlight with the requested brightness
 		 * Note We can not use mipi_dsi_dcs_set_display_brightness()
 		 * as otm8009a driver support only 8-bit brightness (1 param).
@@ -465,7 +482,7 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 
 	ctx->bl_dev->props.max_brightness = OTM8009A_BACKLIGHT_MAX;
 	ctx->bl_dev->props.brightness = OTM8009A_BACKLIGHT_DEFAULT;
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_OFF;
+	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
 	ctx->bl_dev->props.type = BACKLIGHT_RAW;
 
 	drm_panel_add(&ctx->panel);

@@ -11,7 +11,6 @@
  */
 
 #include <linux/fs.h>
-#include <linux/mpage.h>
 #include <linux/buffer_head.h>
 #include "bfs.h"
 
@@ -151,10 +150,9 @@ out:
 	return err;
 }
 
-static int bfs_writepages(struct address_space *mapping,
-		struct writeback_control *wbc)
+static int bfs_writepage(struct page *page, struct writeback_control *wbc)
 {
-	return mpage_writepages(mapping, wbc, bfs_get_block);
+	return block_write_full_page(page, bfs_get_block, wbc);
 }
 
 static int bfs_read_folio(struct file *file, struct folio *folio)
@@ -172,11 +170,11 @@ static void bfs_write_failed(struct address_space *mapping, loff_t to)
 
 static int bfs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct folio **foliop, void **fsdata)
+			struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, foliop, bfs_get_block);
+	ret = block_write_begin(mapping, pos, len, pagep, bfs_get_block);
 	if (unlikely(ret))
 		bfs_write_failed(mapping, pos + len);
 
@@ -192,10 +190,9 @@ const struct address_space_operations bfs_aops = {
 	.dirty_folio	= block_dirty_folio,
 	.invalidate_folio = block_invalidate_folio,
 	.read_folio	= bfs_read_folio,
-	.writepages	= bfs_writepages,
+	.writepage	= bfs_writepage,
 	.write_begin	= bfs_write_begin,
 	.write_end	= generic_write_end,
-	.migrate_folio	= buffer_migrate_folio,
 	.bmap		= bfs_bmap,
 };
 

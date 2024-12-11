@@ -441,8 +441,7 @@ static int process_extent_item(struct btrfs_fs_info *fs_info,
 	u32 item_size = btrfs_item_size(leaf, slot);
 	unsigned long end, ptr;
 	u64 offset, flags, count;
-	int type;
-	int ret = 0;
+	int type, ret;
 
 	ei = btrfs_item_ptr(leaf, slot, struct btrfs_extent_item);
 	flags = btrfs_extent_flags(leaf, ei);
@@ -485,13 +484,6 @@ static int process_extent_item(struct btrfs_fs_info *fs_info,
 			count = btrfs_shared_data_ref_count(leaf, sref);
 			ret = add_shared_data_ref(fs_info, offset, count,
 						  key->objectid, key->offset);
-			break;
-		case BTRFS_EXTENT_OWNER_REF_KEY:
-			if (!btrfs_fs_incompat(fs_info, SIMPLE_QUOTA)) {
-				btrfs_err(fs_info,
-			  "found extent owner ref without simple quotas enabled");
-				ret = -EINVAL;
-			}
 			break;
 		default:
 			btrfs_err(fs_info, "invalid key type in iref");
@@ -660,7 +652,7 @@ static void dump_block_entry(struct btrfs_fs_info *fs_info,
 }
 
 /*
- * Called when we modify a ref for a bytenr.
+ * btrfs_ref_tree_mod: called when we modify a ref for a bytenr
  *
  * This will add an action item to the given bytenr and do sanity checks to make
  * sure we haven't messed something up.  If we are making a new allocation and
@@ -678,7 +670,7 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
 	int ret = 0;
 	bool metadata;
 	u64 bytenr = generic_ref->bytenr;
-	u64 num_bytes = generic_ref->num_bytes;
+	u64 num_bytes = generic_ref->len;
 	u64 parent = generic_ref->parent;
 	u64 ref_root = 0;
 	u64 owner = 0;
@@ -689,11 +681,11 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
 
 	if (generic_ref->type == BTRFS_REF_METADATA) {
 		if (!parent)
-			ref_root = generic_ref->ref_root;
+			ref_root = generic_ref->tree_ref.owning_root;
 		owner = generic_ref->tree_ref.level;
 	} else if (!parent) {
-		ref_root = generic_ref->ref_root;
-		owner = generic_ref->data_ref.objectid;
+		ref_root = generic_ref->data_ref.owning_root;
+		owner = generic_ref->data_ref.ino;
 		offset = generic_ref->data_ref.offset;
 	}
 	metadata = owner < BTRFS_FIRST_FREE_OBJECTID;

@@ -163,10 +163,15 @@ int amdgpu_xcp_init(struct amdgpu_xcp_mgr *xcp_mgr, int num_xcps, int mode)
 	return 0;
 }
 
-static int __amdgpu_xcp_switch_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr,
-					      int mode)
+int amdgpu_xcp_switch_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr, int mode)
 {
 	int ret, curr_mode, num_xcps = 0;
+
+	if (!xcp_mgr || mode == AMDGPU_XCP_MODE_NONE)
+		return -EINVAL;
+
+	if (xcp_mgr->mode == mode)
+		return 0;
 
 	if (!xcp_mgr->funcs || !xcp_mgr->funcs->switch_partition_mode)
 		return 0;
@@ -196,31 +201,11 @@ out:
 	return ret;
 }
 
-int amdgpu_xcp_switch_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr, int mode)
-{
-	if (!xcp_mgr || mode == AMDGPU_XCP_MODE_NONE)
-		return -EINVAL;
-
-	if (xcp_mgr->mode == mode)
-		return 0;
-
-	return __amdgpu_xcp_switch_partition_mode(xcp_mgr, mode);
-}
-
-int amdgpu_xcp_restore_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr)
-{
-	if (!xcp_mgr || xcp_mgr->mode == AMDGPU_XCP_MODE_NONE)
-		return 0;
-
-	return __amdgpu_xcp_switch_partition_mode(xcp_mgr, xcp_mgr->mode);
-}
-
 int amdgpu_xcp_query_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr, u32 flags)
 {
 	int mode;
 
-	if (!amdgpu_sriov_vf(xcp_mgr->adev) &&
-	    xcp_mgr->mode == AMDGPU_XCP_MODE_NONE)
+	if (xcp_mgr->mode == AMDGPU_XCP_MODE_NONE)
 		return xcp_mgr->mode;
 
 	if (!xcp_mgr->funcs || !xcp_mgr->funcs->query_partition_mode)
@@ -229,12 +214,6 @@ int amdgpu_xcp_query_partition_mode(struct amdgpu_xcp_mgr *xcp_mgr, u32 flags)
 	if (!(flags & AMDGPU_XCP_FL_LOCKED))
 		mutex_lock(&xcp_mgr->xcp_lock);
 	mode = xcp_mgr->funcs->query_partition_mode(xcp_mgr);
-
-	/* First time query for VF, set the mode here */
-	if (amdgpu_sriov_vf(xcp_mgr->adev) &&
-	    xcp_mgr->mode == AMDGPU_XCP_MODE_NONE)
-		xcp_mgr->mode = mode;
-
 	if (xcp_mgr->mode != AMDGPU_XCP_MODE_TRANS && mode != xcp_mgr->mode)
 		dev_WARN(
 			xcp_mgr->adev->dev,
@@ -289,7 +268,8 @@ int amdgpu_xcp_mgr_init(struct amdgpu_device *adev, int init_mode,
 {
 	struct amdgpu_xcp_mgr *xcp_mgr;
 
-	if (!xcp_funcs || !xcp_funcs->get_ip_details)
+	if (!xcp_funcs || !xcp_funcs->switch_partition_mode ||
+	    !xcp_funcs->get_ip_details)
 		return -EINVAL;
 
 	xcp_mgr = kzalloc(sizeof(*xcp_mgr), GFP_KERNEL);

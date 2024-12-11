@@ -10,10 +10,6 @@
 #include "compiler.h"
 #include "crt.h"
 
-#if !defined(_ABIO32)
-#error Unsupported MIPS ABI
-#endif
-
 /* Syscalls for MIPS ABI O32 :
  *   - WARNING! there's always a delayed slot!
  *   - WARNING again, the syntax is different, registers take a '$' and numbers
@@ -179,28 +175,21 @@
 })
 
 /* startup code, note that it's called __start on MIPS */
-void __attribute__((weak, noreturn)) __nolibc_entrypoint __no_stack_protector __start(void)
+void __attribute__((weak, noreturn, optimize("Os", "omit-frame-pointer"))) __no_stack_protector __start(void)
 {
 	__asm__ volatile (
 		".set push\n"
 		".set noreorder\n"
-		"bal 1f\n"               /* prime $ra for .cpload                            */
-		"nop\n"
-		"1:\n"
-		".cpload $ra\n"
+		".option pic0\n"
 		"move  $a0, $sp\n"       /* save stack pointer to $a0, as arg1 of _start_c */
-		"addiu $sp, $sp, -4\n"   /* space for .cprestore to store $gp              */
-		".cprestore 0\n"
 		"li    $t0, -8\n"
 		"and   $sp, $sp, $t0\n"  /* $sp must be 8-byte aligned                     */
 		"addiu $sp, $sp, -16\n"  /* the callee expects to save a0..a3 there        */
-		"lui $t9, %hi(_start_c)\n" /* ABI requires current function address in $t9 */
-		"ori $t9, %lo(_start_c)\n"
-		"jalr $t9\n"             /* transfer to c runtime                          */
+		"jal   _start_c\n"       /* transfer to c runtime                          */
 		" nop\n"                 /* delayed slot                                   */
 		".set pop\n"
 	);
-	__nolibc_entrypoint_epilogue();
+	__builtin_unreachable();
 }
 
 #endif /* _NOLIBC_ARCH_MIPS_H */

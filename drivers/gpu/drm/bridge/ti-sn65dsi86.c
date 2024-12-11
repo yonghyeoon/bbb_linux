@@ -21,7 +21,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <drm/display/drm_dp_aux_bus.h>
 #include <drm/display/drm_dp_helper.h>
@@ -152,6 +152,7 @@
  * @ln_assign:    Value to program to the LN_ASSIGN register.
  * @ln_polrs:     Value for the 4-bit LN_POLRS field of SN_ENH_FRAME_REG.
  * @comms_enabled: If true then communication over the aux channel is enabled.
+ * @plugged:       Plug connection status
  * @comms_mutex:   Protects modification of comms_enabled.
  *
  * @gchip:        If we expose our GPIOs, this is used.
@@ -190,6 +191,7 @@ struct ti_sn65dsi86 {
 	u8				ln_assign;
 	u8				ln_polrs;
 	bool				comms_enabled;
+	bool				plugged;
 	struct mutex			comms_mutex;
 
 #if defined(CONFIG_OF_GPIO)
@@ -197,7 +199,7 @@ struct ti_sn65dsi86 {
 	DECLARE_BITMAP(gchip_output, SN_NUM_GPIOS);
 #endif
 #if defined(CONFIG_PWM)
-	struct pwm_chip			*pchip;
+	struct pwm_chip			pchip;
 	bool				pwm_enabled;
 	atomic_t			pwm_pin_busy;
 #endif
@@ -713,10 +715,11 @@ static int ti_sn_attach_host(struct auxiliary_device *adev, struct ti_sn65dsi86 
 	if (IS_ERR(dsi))
 		return PTR_ERR(dsi);
 
-	/* TODO: setting to 4 MIPI lanes always for now */
-	dsi->lanes = 4;
+	/* TODO: setting to 2 MIPI lanes always for now */
+	dsi->lanes = 2;
 	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
+		MIPI_DSI_MODE_NO_EOT_PACKET | MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
 
 	/* check if continuous dsi clock is required or not */
 	pm_runtime_get_sync(dev);
@@ -1091,6 +1094,15 @@ static void ti_sn_bridge_atomic_enable(struct drm_bridge *bridge,
 		return;
 	}
 
+	/*
+	 * Disable ASSR Display Authentication, since its supported only in eDP
+	 * and not spupperted in DP
+	 */
+	regmap_write(pdata->regmap, 0xFF, 0x7);
+	regmap_write(pdata->regmap, 0x16, 0x1);
+	regmap_write(pdata->regmap, 0xFF, 0x0);
+	regmap_update_bits(pdata->regmap, 0x5A, BIT(0), 0);
+
 	max_dp_lanes = ti_sn_get_max_lanes(pdata);
 	pdata->dp_lanes = min(pdata->dp_lanes, max_dp_lanes);
 
@@ -1105,26 +1117,6 @@ static void ti_sn_bridge_atomic_enable(struct drm_bridge *bridge,
 
 	/* set dsi clk frequency value */
 	ti_sn_bridge_set_dsi_rate(pdata);
-
-	/*
-	 * The SN65DSI86 only supports ASSR Display Authentication method and
-	 * this method is enabled for eDP panels. An eDP panel must support this
-	 * authentication method. We need to enable this method in the eDP panel
-	 * at DisplayPort address 0x0010A prior to link training.
-	 *
-	 * As only ASSR is supported by SN65DSI86, for full DisplayPort displays
-	 * we need to disable the scrambler.
-	 */
-	if (pdata->bridge.type == DRM_MODE_CONNECTOR_eDP) {
-		drm_dp_dpcd_writeb(&pdata->aux, DP_EDP_CONFIGURATION_SET,
-				   DP_ALTERNATE_SCRAMBLER_RESET_ENABLE);
-
-		regmap_update_bits(pdata->regmap, SN_TRAINING_SETTING_REG,
-				   SCRAMBLE_DISABLE, 0);
-	} else {
-		regmap_update_bits(pdata->regmap, SN_TRAINING_SETTING_REG,
-				   SCRAMBLE_DISABLE, SCRAMBLE_DISABLE);
-	}
 
 	bpp = ti_sn_bridge_get_bpp(connector);
 	/* Set the DP output format (18 bpp or 24 bpp) */
@@ -1197,29 +1189,34 @@ static void ti_sn_bridge_atomic_post_disable(struct drm_bridge *bridge,
 static enum drm_connector_status ti_sn_bridge_detect(struct drm_bridge *bridge)
 {
 	struct ti_sn65dsi86 *pdata = bridge_to_ti_sn65dsi86(bridge);
-	int val = 0;
+	int val;
+	u8 link_status[DP_LINK_STATUS_SIZE];
 
-	pm_runtime_get_sync(pdata->dev);
-	regmap_read(pdata->regmap, SN_HPD_DISABLE_REG, &val);
-	pm_runtime_put_autosuspend(pdata->dev);
+	if (!pdata->plugged) {
+		pm_runtime_get_sync(pdata->dev);
+		val = drm_dp_dpcd_read_link_status(&pdata->aux, link_status);
+		pm_runtime_put_autosuspend(pdata->dev);
+		if (val > 0)
+			pdata->plugged = true;
+	}
 
-	return val & HPD_DEBOUNCED_STATE ? connector_status_connected
-					 : connector_status_disconnected;
+	return pdata->plugged ? connector_status_connected
+			      : connector_status_disconnected;
 }
 
-static const struct drm_edid *ti_sn_bridge_edid_read(struct drm_bridge *bridge,
-						     struct drm_connector *connector)
+static struct edid *ti_sn_bridge_get_edid(struct drm_bridge *bridge,
+					  struct drm_connector *connector)
 {
 	struct ti_sn65dsi86 *pdata = bridge_to_ti_sn65dsi86(bridge);
 
-	return drm_edid_read_ddc(connector, &pdata->aux.ddc);
+	return drm_get_edid(connector, &pdata->aux.ddc);
 }
 
 static const struct drm_bridge_funcs ti_sn_bridge_funcs = {
 	.attach = ti_sn_bridge_attach,
 	.detach = ti_sn_bridge_detach,
 	.mode_valid = ti_sn_bridge_mode_valid,
-	.edid_read = ti_sn_bridge_edid_read,
+	.get_edid = ti_sn_bridge_get_edid,
 	.detect = ti_sn_bridge_detect,
 	.atomic_pre_enable = ti_sn_bridge_atomic_pre_enable,
 	.atomic_enable = ti_sn_bridge_atomic_enable,
@@ -1316,8 +1313,11 @@ static int ti_sn_bridge_probe(struct auxiliary_device *adev,
 	pdata->bridge.type = pdata->next_bridge->type == DRM_MODE_CONNECTOR_DisplayPort
 			   ? DRM_MODE_CONNECTOR_DisplayPort : DRM_MODE_CONNECTOR_eDP;
 
+	pdata->plugged = false;
+	pdata->bridge.ops |= DRM_BRIDGE_OP_DETECT;
+
 	if (pdata->bridge.type == DRM_MODE_CONNECTOR_DisplayPort)
-		pdata->bridge.ops = DRM_BRIDGE_OP_EDID | DRM_BRIDGE_OP_DETECT;
+		pdata->bridge.ops |= DRM_BRIDGE_OP_EDID;
 
 	drm_bridge_add(&pdata->bridge);
 
@@ -1374,7 +1374,7 @@ static void ti_sn_pwm_pin_release(struct ti_sn65dsi86 *pdata)
 
 static struct ti_sn65dsi86 *pwm_chip_to_ti_sn_bridge(struct pwm_chip *chip)
 {
-	return pwmchip_get_drvdata(chip);
+	return container_of(chip, struct ti_sn65dsi86, pchip);
 }
 
 static int ti_sn_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
@@ -1415,9 +1415,11 @@ static int ti_sn_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	int ret;
 
 	if (!pdata->pwm_enabled) {
-		ret = pm_runtime_resume_and_get(pwmchip_parent(chip));
-		if (ret < 0)
+		ret = pm_runtime_get_sync(pdata->dev);
+		if (ret < 0) {
+			pm_runtime_put_sync(pdata->dev);
 			return ret;
+		}
 	}
 
 	if (state->enabled) {
@@ -1431,7 +1433,7 @@ static int ti_sn_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 						 SN_GPIO_MUX_MASK << (2 * SN_PWM_GPIO_IDX),
 						 SN_GPIO_MUX_SPECIAL << (2 * SN_PWM_GPIO_IDX));
 			if (ret) {
-				dev_err(pwmchip_parent(chip), "failed to mux in PWM function\n");
+				dev_err(pdata->dev, "failed to mux in PWM function\n");
 				goto out;
 			}
 		}
@@ -1507,7 +1509,7 @@ static int ti_sn_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 
 		ret = regmap_write(pdata->regmap, SN_PWM_PRE_DIV_REG, pre_div);
 		if (ret) {
-			dev_err(pwmchip_parent(chip), "failed to update PWM_PRE_DIV\n");
+			dev_err(pdata->dev, "failed to update PWM_PRE_DIV\n");
 			goto out;
 		}
 
@@ -1519,7 +1521,7 @@ static int ti_sn_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 		     FIELD_PREP(SN_PWM_INV_MASK, state->polarity == PWM_POLARITY_INVERSED);
 	ret = regmap_write(pdata->regmap, SN_PWM_EN_INV_REG, pwm_en_inv);
 	if (ret) {
-		dev_err(pwmchip_parent(chip), "failed to update PWM_EN/PWM_INV\n");
+		dev_err(pdata->dev, "failed to update PWM_EN/PWM_INV\n");
 		goto out;
 	}
 
@@ -1527,7 +1529,7 @@ static int ti_sn_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 out:
 
 	if (!pdata->pwm_enabled)
-		pm_runtime_put_sync(pwmchip_parent(chip));
+		pm_runtime_put_sync(pdata->dev);
 
 	return ret;
 }
@@ -1580,36 +1582,31 @@ static const struct pwm_ops ti_sn_pwm_ops = {
 	.free = ti_sn_pwm_free,
 	.apply = ti_sn_pwm_apply,
 	.get_state = ti_sn_pwm_get_state,
+	.owner = THIS_MODULE,
 };
 
 static int ti_sn_pwm_probe(struct auxiliary_device *adev,
 			   const struct auxiliary_device_id *id)
 {
-	struct pwm_chip *chip;
 	struct ti_sn65dsi86 *pdata = dev_get_drvdata(adev->dev.parent);
 
-	pdata->pchip = chip = devm_pwmchip_alloc(&adev->dev, 1, 0);
-	if (IS_ERR(chip))
-		return PTR_ERR(chip);
+	pdata->pchip.dev = pdata->dev;
+	pdata->pchip.ops = &ti_sn_pwm_ops;
+	pdata->pchip.npwm = 1;
+	pdata->pchip.of_xlate = of_pwm_single_xlate;
+	pdata->pchip.of_pwm_n_cells = 1;
 
-	pwmchip_set_drvdata(chip, pdata);
-
-	chip->ops = &ti_sn_pwm_ops;
-	chip->of_xlate = of_pwm_single_xlate;
-
-	devm_pm_runtime_enable(&adev->dev);
-
-	return pwmchip_add(chip);
+	return pwmchip_add(&pdata->pchip);
 }
 
 static void ti_sn_pwm_remove(struct auxiliary_device *adev)
 {
 	struct ti_sn65dsi86 *pdata = dev_get_drvdata(adev->dev.parent);
 
-	pwmchip_remove(pdata->pchip);
+	pwmchip_remove(&pdata->pchip);
 
 	if (pdata->pwm_enabled)
-		pm_runtime_put_sync(&adev->dev);
+		pm_runtime_put_sync(pdata->dev);
 }
 
 static const struct auxiliary_device_id ti_sn_pwm_id_table[] = {

@@ -711,7 +711,7 @@ int phy_base_write(struct phy_device *phydev, u32 regnum, u16 val)
 		dump_stack();
 	}
 
-	return __phy_package_write(phydev, VSC88XX_BASE_ADDR, regnum, val);
+	return __phy_package_write(phydev, regnum, val);
 }
 
 /* phydev->bus->mdio_lock should be locked when using this function */
@@ -722,7 +722,7 @@ int phy_base_read(struct phy_device *phydev, u32 regnum)
 		dump_stack();
 	}
 
-	return __phy_package_read(phydev, VSC88XX_BASE_ADDR, regnum);
+	return __phy_package_read(phydev, regnum);
 }
 
 u32 vsc85xx_csr_read(struct phy_device *phydev,
@@ -1700,6 +1700,21 @@ static int vsc8574_config_host_serdes(struct phy_device *phydev)
 			   PROC_CMD_RST_CONF_PORT | PROC_CMD_FIBER_1000BASE_X);
 }
 
+static int vsc85xx_config_inband_aneg(struct phy_device *phydev, bool enabled)
+{
+	u16 reg_val = 0;
+	int rc;
+
+	if (enabled)
+		reg_val = MSCC_PHY_SERDES_ANEG;
+
+	rc = phy_modify_paged(phydev, MSCC_PHY_PAGE_EXTENDED_3,
+			      MSCC_PHY_SERDES_PCS_CTRL, MSCC_PHY_SERDES_ANEG,
+			      reg_val);
+
+	return rc;
+}
+
 static int vsc8584_config_init(struct phy_device *phydev)
 {
 	struct vsc8531_private *vsc8531 = phydev->priv;
@@ -2107,6 +2122,10 @@ static int vsc8514_config_init(struct phy_device *phydev)
 		return ret;
 
 	ret = genphy_soft_reset(phydev);
+	if (ret)
+		return ret;
+
+	ret = vsc85xx_config_inband_aneg(phydev, true);
 
 	if (ret)
 		return ret;

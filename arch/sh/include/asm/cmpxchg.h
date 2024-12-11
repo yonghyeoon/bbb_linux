@@ -9,7 +9,6 @@
 
 #include <linux/compiler.h>
 #include <linux/types.h>
-#include <linux/cmpxchg-emu.h>
 
 #if defined(CONFIG_GUSA_RB)
 #include <asm/cmpxchg-grb.h>
@@ -57,8 +56,6 @@ static inline unsigned long __cmpxchg(volatile void * ptr, unsigned long old,
 		unsigned long new, int size)
 {
 	switch (size) {
-	case 1:
-		return cmpxchg_emu_u8(ptr, old, new);
 	case 4:
 		return __cmpxchg_u32(ptr, old, new);
 	}
@@ -73,14 +70,5 @@ static inline unsigned long __cmpxchg(volatile void * ptr, unsigned long old,
      (__typeof__(*(ptr))) __cmpxchg((ptr), (unsigned long)_o_,		 \
 				    (unsigned long)_n_, sizeof(*(ptr))); \
   })
-
-#include <asm-generic/cmpxchg-local.h>
-
-#define arch_cmpxchg_local(ptr, o, n) ({				\
-	(__typeof__(*ptr))__generic_cmpxchg_local((ptr),		\
-						  (unsigned long)(o),	\
-						  (unsigned long)(n),	\
-						  sizeof(*(ptr)));	\
-})
 
 #endif /* __ASM_SH_CMPXCHG_H */

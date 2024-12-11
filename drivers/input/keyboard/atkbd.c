@@ -639,7 +639,7 @@ static void atkbd_event_work(struct work_struct *work)
 {
 	struct atkbd *atkbd = container_of(work, struct atkbd, event_work.work);
 
-	guard(mutex)(&atkbd->mutex);
+	mutex_lock(&atkbd->mutex);
 
 	if (!atkbd->enabled) {
 		/*
@@ -657,6 +657,8 @@ static void atkbd_event_work(struct work_struct *work)
 		if (test_and_clear_bit(ATKBD_REP_EVENT_BIT, &atkbd->event_mask))
 			atkbd_set_repeat_rate(atkbd);
 	}
+
+	mutex_unlock(&atkbd->mutex);
 }
 
 /*
@@ -824,7 +826,7 @@ static int atkbd_probe(struct atkbd *atkbd)
 
 	if (atkbd_skip_getid(atkbd)) {
 		atkbd->id = 0xab83;
-		goto deactivate_kbd;
+		return 0;
 	}
 
 /*
@@ -861,7 +863,6 @@ static int atkbd_probe(struct atkbd *atkbd)
 		return -1;
 	}
 
-deactivate_kbd:
 /*
  * Make sure nothing is coming from the keyboard and disturbs our
  * internal state.
@@ -1277,7 +1278,7 @@ static int atkbd_connect(struct serio *serio, struct serio_driver *drv)
 	struct input_dev *dev;
 	int err = -ENOMEM;
 
-	atkbd = kzalloc(sizeof(*atkbd), GFP_KERNEL);
+	atkbd = kzalloc(sizeof(struct atkbd), GFP_KERNEL);
 	dev = input_allocate_device();
 	if (!atkbd || !dev)
 		goto fail1;
@@ -1359,7 +1360,7 @@ static int atkbd_reconnect(struct serio *serio)
 {
 	struct atkbd *atkbd = atkbd_from_serio(serio);
 	struct serio_driver *drv = serio->drv;
-	int error;
+	int retval = -1;
 
 	if (!atkbd || !drv) {
 		dev_dbg(&serio->dev,
@@ -1367,17 +1368,16 @@ static int atkbd_reconnect(struct serio *serio)
 		return -1;
 	}
 
-	guard(mutex)(&atkbd->mutex);
+	mutex_lock(&atkbd->mutex);
 
 	atkbd_disable(atkbd);
 
 	if (atkbd->write) {
-		error = atkbd_probe(atkbd);
-		if (error)
-			return error;
+		if (atkbd_probe(atkbd))
+			goto out;
 
 		if (atkbd->set != atkbd_select_set(atkbd, atkbd->set, atkbd->extra))
-			return -EIO;
+			goto out;
 
 		/*
 		 * Restore LED state and repeat rate. While input core
@@ -1403,7 +1403,11 @@ static int atkbd_reconnect(struct serio *serio)
 	if (atkbd->write)
 		atkbd_activate(atkbd);
 
-	return 0;
+	retval = 0;
+
+ out:
+	mutex_unlock(&atkbd->mutex);
+	return retval;
 }
 
 static const struct serio_device_id atkbd_serio_ids[] = {
@@ -1460,15 +1464,17 @@ static ssize_t atkbd_attr_set_helper(struct device *dev, const char *buf, size_t
 	struct atkbd *atkbd = atkbd_from_serio(serio);
 	int retval;
 
-	scoped_guard(mutex_intr, &atkbd->mutex) {
-		atkbd_disable(atkbd);
-		retval = handler(atkbd, buf, count);
-		atkbd_enable(atkbd);
-
+	retval = mutex_lock_interruptible(&atkbd->mutex);
+	if (retval)
 		return retval;
-	}
 
-	return -EINTR;
+	atkbd_disable(atkbd);
+	retval = handler(atkbd, buf, count);
+	atkbd_enable(atkbd);
+
+	mutex_unlock(&atkbd->mutex);
+
+	return retval;
 }
 
 static ssize_t atkbd_show_extra(struct atkbd *atkbd, char *buf)

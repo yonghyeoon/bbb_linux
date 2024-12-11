@@ -29,7 +29,6 @@ static bool debug;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Show debug output");
 
-MODULE_DESCRIPTION("IBM Premium Real Time Mode (PRTM) driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Keith Mannthey <kmmanth@us.ibm.com>");
 MODULE_AUTHOR("Vernon Mauery <vernux@us.ibm.com>");
@@ -180,7 +179,7 @@ static ssize_t rtl_set_state(struct device *dev,
 	return ret;
 }
 
-static const struct bus_type rtl_subsys = {
+static struct bus_type rtl_subsys = {
 	.name = "ibm_rtl",
 	.dev_name = "ibm_rtl",
 };

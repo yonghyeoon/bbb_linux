@@ -62,55 +62,19 @@
 #define IUCV_IPNORPY	0x10
 #define IUCV_IPALL	0x80
 
-static int iucv_bus_match(struct device *dev, const struct device_driver *drv)
+static int iucv_bus_match(struct device *dev, struct device_driver *drv)
 {
 	return 0;
 }
 
-const struct bus_type iucv_bus = {
+struct bus_type iucv_bus = {
 	.name = "iucv",
 	.match = iucv_bus_match,
 };
 EXPORT_SYMBOL(iucv_bus);
 
-static struct device *iucv_root;
-
-static void iucv_release_device(struct device *device)
-{
-	kfree(device);
-}
-
-struct device *iucv_alloc_device(const struct attribute_group **attrs,
-				 struct device_driver *driver,
-				 void *priv, const char *fmt, ...)
-{
-	struct device *dev;
-	va_list vargs;
-	char buf[20];
-	int rc;
-
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
-		goto out_error;
-	va_start(vargs, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, vargs);
-	rc = dev_set_name(dev, "%s", buf);
-	va_end(vargs);
-	if (rc)
-		goto out_error;
-	dev->bus = &iucv_bus;
-	dev->parent = iucv_root;
-	dev->driver = driver;
-	dev->groups = attrs;
-	dev->release = iucv_release_device;
-	dev_set_drvdata(dev, priv);
-	return dev;
-
-out_error:
-	kfree(dev);
-	return NULL;
-}
-EXPORT_SYMBOL(iucv_alloc_device);
+struct device *iucv_root;
+EXPORT_SYMBOL(iucv_root);
 
 static int iucv_available;
 
@@ -246,7 +210,7 @@ struct iucv_cmd_dpl {
 	u8  iprmmsg[8];
 	u32 ipsrccls;
 	u32 ipmsgtag;
-	dma32_t ipbfadr2;
+	u32 ipbfadr2;
 	u32 ipbfln2f;
 	u32 res;
 } __attribute__ ((packed,aligned(8)));
@@ -262,11 +226,11 @@ struct iucv_cmd_db {
 	u8  iprcode;
 	u32 ipmsgid;
 	u32 iptrgcls;
-	dma32_t ipbfadr1;
+	u32 ipbfadr1;
 	u32 ipbfln1f;
 	u32 ipsrccls;
 	u32 ipmsgtag;
-	dma32_t ipbfadr2;
+	u32 ipbfadr2;
 	u32 ipbfln2f;
 	u32 res;
 } __attribute__ ((packed,aligned(8)));
@@ -322,7 +286,6 @@ static union iucv_param *iucv_param_irq[NR_CPUS];
  */
 static inline int __iucv_call_b2f0(int command, union iucv_param *parm)
 {
-	unsigned long reg1 = virt_to_phys(parm);
 	int cc;
 
 	asm volatile(
@@ -333,7 +296,7 @@ static inline int __iucv_call_b2f0(int command, union iucv_param *parm)
 		"	srl	%[cc],28\n"
 		: [cc] "=&d" (cc), "+m" (*parm)
 		: [reg0] "d" ((unsigned long)command),
-		  [reg1] "d" (reg1)
+		  [reg1] "d" ((unsigned long)parm)
 		: "cc", "0", "1");
 	return cc;
 }
@@ -468,7 +431,7 @@ static void iucv_declare_cpu(void *data)
 	/* Declare interrupt buffer. */
 	parm = iucv_param_irq[cpu];
 	memset(parm, 0, sizeof(union iucv_param));
-	parm->db.ipbfadr1 = virt_to_dma32(iucv_irq_data[cpu]);
+	parm->db.ipbfadr1 = virt_to_phys(iucv_irq_data[cpu]);
 	rc = iucv_call_b2f0(IUCV_DECLARE_BUFFER, parm);
 	if (rc) {
 		char *err = "Unknown";
@@ -556,7 +519,7 @@ static void iucv_setmask_mp(void)
  */
 static void iucv_setmask_up(void)
 {
-	static cpumask_t cpumask;
+	cpumask_t cpumask;
 	int cpu;
 
 	/* Disable all cpu but the first in cpu_irq_cpumask. */
@@ -664,33 +627,23 @@ static int iucv_cpu_online(unsigned int cpu)
 
 static int iucv_cpu_down_prep(unsigned int cpu)
 {
-	cpumask_var_t cpumask;
-	int ret = 0;
+	cpumask_t cpumask;
 
 	if (!iucv_path_table)
 		return 0;
 
-	if (!alloc_cpumask_var(&cpumask, GFP_KERNEL))
-		return -ENOMEM;
-
-	cpumask_copy(cpumask, &iucv_buffer_cpumask);
-	cpumask_clear_cpu(cpu, cpumask);
-	if (cpumask_empty(cpumask)) {
+	cpumask_copy(&cpumask, &iucv_buffer_cpumask);
+	cpumask_clear_cpu(cpu, &cpumask);
+	if (cpumask_empty(&cpumask))
 		/* Can't offline last IUCV enabled cpu. */
-		ret = -EINVAL;
-		goto __free_cpumask;
-	}
+		return -EINVAL;
 
 	iucv_retrieve_cpu(NULL);
 	if (!cpumask_empty(&iucv_irq_cpumask))
-		goto __free_cpumask;
-
+		return 0;
 	smp_call_function_single(cpumask_first(&iucv_buffer_cpumask),
 				 iucv_allow_cpu, NULL, 1);
-
-__free_cpumask:
-	free_cpumask_var(cpumask);
-	return ret;
+	return 0;
 }
 
 /**
@@ -1127,7 +1080,8 @@ static int iucv_message_receive_iprmdata(struct iucv_path *path,
 		size = (size < 8) ? size : 8;
 		for (array = buffer; size > 0; array++) {
 			copy = min_t(size_t, size, array->length);
-			memcpy(dma32_to_virt(array->address), rmmsg, copy);
+			memcpy((u8 *)(addr_t) array->address,
+				rmmsg, copy);
 			rmmsg += copy;
 			size -= copy;
 		}
@@ -1169,7 +1123,7 @@ int __iucv_message_receive(struct iucv_path *path, struct iucv_message *msg,
 
 	parm = iucv_param[smp_processor_id()];
 	memset(parm, 0, sizeof(union iucv_param));
-	parm->db.ipbfadr1 = virt_to_dma32(buffer);
+	parm->db.ipbfadr1 = (u32)(addr_t) buffer;
 	parm->db.ipbfln1f = (u32) size;
 	parm->db.ipmsgid = msg->id;
 	parm->db.ippathid = path->pathid;
@@ -1287,7 +1241,7 @@ int iucv_message_reply(struct iucv_path *path, struct iucv_message *msg,
 		parm->dpl.iptrgcls = msg->class;
 		memcpy(parm->dpl.iprmmsg, reply, min_t(size_t, size, 8));
 	} else {
-		parm->db.ipbfadr1 = virt_to_dma32(reply);
+		parm->db.ipbfadr1 = (u32)(addr_t) reply;
 		parm->db.ipbfln1f = (u32) size;
 		parm->db.ippathid = path->pathid;
 		parm->db.ipflags1 = flags;
@@ -1339,7 +1293,7 @@ int __iucv_message_send(struct iucv_path *path, struct iucv_message *msg,
 		parm->dpl.ipmsgtag = msg->tag;
 		memcpy(parm->dpl.iprmmsg, buffer, 8);
 	} else {
-		parm->db.ipbfadr1 = virt_to_dma32(buffer);
+		parm->db.ipbfadr1 = (u32)(addr_t) buffer;
 		parm->db.ipbfln1f = (u32) size;
 		parm->db.ippathid = path->pathid;
 		parm->db.ipflags1 = flags | IUCV_IPNORPY;
@@ -1424,7 +1378,7 @@ int iucv_message_send2way(struct iucv_path *path, struct iucv_message *msg,
 		parm->dpl.iptrgcls = msg->class;
 		parm->dpl.ipsrccls = srccls;
 		parm->dpl.ipmsgtag = msg->tag;
-		parm->dpl.ipbfadr2 = virt_to_dma32(answer);
+		parm->dpl.ipbfadr2 = (u32)(addr_t) answer;
 		parm->dpl.ipbfln2f = (u32) asize;
 		memcpy(parm->dpl.iprmmsg, buffer, 8);
 	} else {
@@ -1433,9 +1387,9 @@ int iucv_message_send2way(struct iucv_path *path, struct iucv_message *msg,
 		parm->db.iptrgcls = msg->class;
 		parm->db.ipsrccls = srccls;
 		parm->db.ipmsgtag = msg->tag;
-		parm->db.ipbfadr1 = virt_to_dma32(buffer);
+		parm->db.ipbfadr1 = (u32)(addr_t) buffer;
 		parm->db.ipbfln1f = (u32) size;
-		parm->db.ipbfadr2 = virt_to_dma32(answer);
+		parm->db.ipbfadr2 = (u32)(addr_t) answer;
 		parm->db.ipbfln2f = (u32) asize;
 	}
 	rc = iucv_call_b2f0(IUCV_SEND, parm);
@@ -1869,7 +1823,7 @@ static int __init iucv_init(void)
 		rc = -EPROTONOSUPPORT;
 		goto out;
 	}
-	system_ctl_set_bit(0, CR0_IUCV_BIT);
+	ctl_set_bit(0, 1);
 	rc = iucv_query_maxconn();
 	if (rc)
 		goto out_ctl;
@@ -1917,7 +1871,7 @@ out_dev:
 out_int:
 	unregister_external_irq(EXT_IRQ_IUCV, iucv_external_interrupt);
 out_ctl:
-	system_ctl_clear_bit(0, 1);
+	ctl_clear_bit(0, 1);
 out:
 	return rc;
 }
@@ -1949,6 +1903,6 @@ static void __exit iucv_exit(void)
 subsys_initcall(iucv_init);
 module_exit(iucv_exit);
 
-MODULE_AUTHOR("(C) 2001 IBM Corp. by Fritz Elfert <felfert@millenux.com>");
+MODULE_AUTHOR("(C) 2001 IBM Corp. by Fritz Elfert (felfert@millenux.com)");
 MODULE_DESCRIPTION("Linux for S/390 IUCV lowlevel driver");
 MODULE_LICENSE("GPL");

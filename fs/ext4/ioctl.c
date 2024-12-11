@@ -312,22 +312,13 @@ static void swap_inode_data(struct inode *inode1, struct inode *inode2)
 	struct ext4_inode_info *ei1;
 	struct ext4_inode_info *ei2;
 	unsigned long tmp;
-	struct timespec64 ts1, ts2;
 
 	ei1 = EXT4_I(inode1);
 	ei2 = EXT4_I(inode2);
 
 	swap(inode1->i_version, inode2->i_version);
-
-	ts1 = inode_get_atime(inode1);
-	ts2 = inode_get_atime(inode2);
-	inode_set_atime_to_ts(inode1, ts2);
-	inode_set_atime_to_ts(inode2, ts1);
-
-	ts1 = inode_get_mtime(inode1);
-	ts2 = inode_get_mtime(inode2);
-	inode_set_mtime_to_ts(inode1, ts2);
-	inode_set_mtime_to_ts(inode2, ts1);
+	swap(inode1->i_atime, inode2->i_atime);
+	swap(inode1->i_mtime, inode2->i_mtime);
 
 	memswap(ei1->i_data, ei2->i_data, sizeof(ei1->i_data));
 	tmp = ei1->i_flags & EXT4_FL_SHOULD_SWAP;
@@ -467,7 +458,7 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	ext4_reset_inode_seed(inode);
 	ext4_reset_inode_seed(inode_bl);
 
-	ext4_discard_preallocations(inode);
+	ext4_discard_preallocations(inode, 0);
 
 	err = ext4_mark_inode_dirty(handle, inode);
 	if (err < 0) {
@@ -819,11 +810,11 @@ int ext4_force_shutdown(struct super_block *sb, u32 flags)
 
 	switch (flags) {
 	case EXT4_GOING_FLAGS_DEFAULT:
-		ret = bdev_freeze(sb->s_bdev);
+		ret = freeze_bdev(sb->s_bdev);
 		if (ret)
 			return ret;
 		set_bit(EXT4_FLAGS_SHUTDOWN, &sbi->s_ext4_flags);
-		bdev_thaw(sb->s_bdev);
+		thaw_bdev(sb->s_bdev);
 		break;
 	case EXT4_GOING_FLAGS_LOGFLUSH:
 		set_bit(EXT4_FLAGS_SHUTDOWN, &sbi->s_ext4_flags);
@@ -1150,8 +1141,9 @@ static int ext4_ioctl_getlabel(struct ext4_sb_info *sbi, char __user *user_label
 	 */
 	BUILD_BUG_ON(EXT4_LABEL_MAX >= FSLABEL_MAX);
 
+	memset(label, 0, sizeof(label));
 	lock_buffer(sbi->s_sbh);
-	memtostr_pad(label, sbi->s_es->s_volume_name);
+	strncpy(label, sbi->s_es->s_volume_name, EXT4_LABEL_MAX);
 	unlock_buffer(sbi->s_sbh);
 
 	if (copy_to_user(user_label, label, sizeof(label)))
@@ -1343,10 +1335,10 @@ group_extend_out:
 		me.moved_len = 0;
 
 		donor = fdget(me.donor_fd);
-		if (!fd_file(donor))
+		if (!donor.file)
 			return -EBADF;
 
-		if (!(fd_file(donor)->f_mode & FMODE_WRITE)) {
+		if (!(donor.file->f_mode & FMODE_WRITE)) {
 			err = -EBADF;
 			goto mext_out;
 		}
@@ -1367,7 +1359,7 @@ group_extend_out:
 		if (err)
 			goto mext_out;
 
-		err = ext4_move_extents(filp, fd_file(donor), me.orig_start,
+		err = ext4_move_extents(filp, donor.file, me.orig_start,
 					me.donor_start, me.len, &me.moved_len);
 		mnt_drop_write_file(filp);
 

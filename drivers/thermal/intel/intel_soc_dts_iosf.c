@@ -129,20 +129,34 @@ err_restore_ptps:
 	return status;
 }
 
-static int sys_set_trip_temp(struct thermal_zone_device *tzd,
-			     const struct thermal_trip *trip,
+static int configure_trip(struct intel_soc_dts_sensor_entry *dts,
+			  int thres_index, enum thermal_trip_type trip_type,
+			  int temp)
+{
+	int ret;
+
+	ret = update_trip_temp(dts->sensors, thres_index, temp);
+	if (ret)
+		return ret;
+
+	dts->trips[thres_index].temperature = temp;
+	dts->trips[thres_index].type = trip_type;
+
+	return 0;
+}
+
+static int sys_set_trip_temp(struct thermal_zone_device *tzd, int trip,
 			     int temp)
 {
 	struct intel_soc_dts_sensor_entry *dts = thermal_zone_device_priv(tzd);
 	struct intel_soc_dts_sensors *sensors = dts->sensors;
-	unsigned int trip_index = THERMAL_TRIP_PRIV_TO_INT(trip->priv);
 	int status;
 
 	if (temp > sensors->tj_max)
 		return -EINVAL;
 
 	mutex_lock(&sensors->dts_update_lock);
-	status = update_trip_temp(sensors, trip_index, temp);
+	status = update_trip_temp(sensors, trip, temp);
 	mutex_unlock(&sensors->dts_update_lock);
 
 	return status;
@@ -170,7 +184,7 @@ static int sys_get_curr_temp(struct thermal_zone_device *tzd,
 	return 0;
 }
 
-static const struct thermal_zone_device_ops tzone_ops = {
+static struct thermal_zone_device_ops tzone_ops = {
 	.get_temp = sys_get_curr_temp,
 	.set_trip_temp = sys_set_trip_temp,
 };
@@ -204,10 +218,15 @@ static void remove_dts_thermal_zone(struct intel_soc_dts_sensor_entry *dts)
 }
 
 static int add_dts_thermal_zone(int id, struct intel_soc_dts_sensor_entry *dts,
-				struct thermal_trip *trips)
+				bool critical_trip)
 {
+	int writable_trip_cnt = SOC_MAX_DTS_TRIPS;
 	char name[10];
+	unsigned long trip;
+	int trip_mask;
+	unsigned long ptps;
 	u32 store_ptps;
+	unsigned long i;
 	int ret;
 
 	/* Store status to restor on exit */
@@ -218,20 +237,26 @@ static int add_dts_thermal_zone(int id, struct intel_soc_dts_sensor_entry *dts,
 
 	dts->id = id;
 
+	if (critical_trip)
+		writable_trip_cnt--;
+
+	trip_mask = GENMASK(writable_trip_cnt - 1, 0);
+
 	/* Check if the writable trip we provide is not used by BIOS */
 	ret = iosf_mbi_read(BT_MBI_UNIT_PMC, MBI_REG_READ,
 			    SOC_DTS_OFFSET_PTPS, &store_ptps);
-	if (!ret) {
-		int i;
-
-		for (i = 0; i <= 1; i++) {
-			if (store_ptps & (0xFFU << i * 8))
-				trips[i].flags &= ~THERMAL_TRIP_FLAG_RW_TEMP;
-		}
+	if (ret)
+		trip_mask = 0;
+	else {
+		ptps = store_ptps;
+		for_each_set_clump8(i, trip, &ptps, writable_trip_cnt * 8)
+			trip_mask &= ~BIT(i / 8);
 	}
+	dts->trip_mask = trip_mask;
 	snprintf(name, sizeof(name), "soc_dts%d", id);
-	dts->tzone = thermal_zone_device_register_with_trips(name, trips,
+	dts->tzone = thermal_zone_device_register_with_trips(name, dts->trips,
 							     SOC_MAX_DTS_TRIPS,
+							     trip_mask,
 							     dts, &tzone_ops,
 							     NULL, 0, 0);
 	if (IS_ERR(dts->tzone)) {
@@ -290,24 +315,14 @@ EXPORT_SYMBOL_GPL(intel_soc_dts_iosf_interrupt_handler);
 
 static void dts_trips_reset(struct intel_soc_dts_sensors *sensors, int dts_index)
 {
-	update_trip_temp(sensors, 0, 0);
-	update_trip_temp(sensors, 1, 0);
-}
-
-static void set_trip(struct thermal_trip *trip, enum thermal_trip_type type,
-		     u8 flags, int temp, unsigned int index)
-{
-	trip->type = type;
-	trip->flags = flags;
-	trip->temperature = temp;
-	trip->priv = THERMAL_INT_TO_TRIP_PRIV(index);
+	configure_trip(&sensors->soc_dts[dts_index], 0, 0, 0);
+	configure_trip(&sensors->soc_dts[dts_index], 1, 0, 0);
 }
 
 struct intel_soc_dts_sensors *
 intel_soc_dts_iosf_init(enum intel_soc_dts_interrupt_type intr_type,
 			bool critical_trip, int crit_offset)
 {
-	struct thermal_trip trips[SOC_MAX_DTS_SENSORS][SOC_MAX_DTS_TRIPS] = { 0 };
 	struct intel_soc_dts_sensors *sensors;
 	int tj_max;
 	int ret;
@@ -330,33 +345,30 @@ intel_soc_dts_iosf_init(enum intel_soc_dts_interrupt_type intr_type,
 	sensors->tj_max = tj_max * 1000;
 
 	for (i = 0; i < SOC_MAX_DTS_SENSORS; ++i) {
+		enum thermal_trip_type trip_type;
 		int temp;
 
 		sensors->soc_dts[i].sensors = sensors;
 
-		set_trip(&trips[i][0], THERMAL_TRIP_PASSIVE,
-			 THERMAL_TRIP_FLAG_RW_TEMP, 0, 0);
-
-		ret = update_trip_temp(sensors, 0, 0);
+		ret = configure_trip(&sensors->soc_dts[i], 0,
+				     THERMAL_TRIP_PASSIVE, 0);
 		if (ret)
 			goto err_reset_trips;
 
 		if (critical_trip) {
+			trip_type = THERMAL_TRIP_CRITICAL;
 			temp = sensors->tj_max - crit_offset;
-			set_trip(&trips[i][1], THERMAL_TRIP_CRITICAL, 0, temp, 1);
 		} else {
-			set_trip(&trips[i][1], THERMAL_TRIP_PASSIVE,
-				 THERMAL_TRIP_FLAG_RW_TEMP, 0, 1);
+			trip_type = THERMAL_TRIP_PASSIVE;
 			temp = 0;
 		}
-
-		ret = update_trip_temp(sensors, 1, temp);
+		ret = configure_trip(&sensors->soc_dts[i], 1, trip_type, temp);
 		if (ret)
 			goto err_reset_trips;
 	}
 
 	for (i = 0; i < SOC_MAX_DTS_SENSORS; ++i) {
-		ret = add_dts_thermal_zone(i, &sensors->soc_dts[i], trips[i]);
+		ret = add_dts_thermal_zone(i, &sensors->soc_dts[i], critical_trip);
 		if (ret)
 			goto err_remove_zone;
 	}
@@ -390,4 +402,3 @@ EXPORT_SYMBOL_GPL(intel_soc_dts_iosf_exit);
 
 MODULE_IMPORT_NS(INTEL_TCC);
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("SoC DTS driver using side band interface");

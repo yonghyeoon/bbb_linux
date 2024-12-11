@@ -15,10 +15,10 @@
 #include <linux/console.h>
 #include <linux/seq_file.h>
 #include <linux/screen_info.h>
+#include <linux/of_platform.h>
 #include <linux/init.h>
 #include <linux/kexec.h>
 #include <linux/libfdt.h>
-#include <linux/of.h>
 #include <linux/of_fdt.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -928,8 +928,9 @@ static void __init request_standard_resources(const struct machine_desc *mdesc)
 		request_resource(&ioport_resource, &lp2);
 }
 
-#if defined(CONFIG_VGA_CONSOLE)
-struct screen_info vgacon_screen_info = {
+#if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE) || \
+    defined(CONFIG_EFI)
+struct screen_info screen_info = {
  .orig_video_lines	= 30,
  .orig_video_cols	= 80,
  .orig_video_mode	= 0,
@@ -979,7 +980,7 @@ static int __init init_machine_late(void)
 }
 late_initcall(init_machine_late);
 
-#ifdef CONFIG_CRASH_RESERVE
+#ifdef CONFIG_KEXEC
 /*
  * The crash region must be aligned to 128MB to avoid
  * zImage relocating below the reserved region.
@@ -1009,8 +1010,7 @@ static void __init reserve_crashkernel(void)
 
 	total_mem = get_total_mem();
 	ret = parse_crashkernel(boot_command_line, total_mem,
-				&crash_size, &crash_base,
-				NULL, NULL);
+				&crash_size, &crash_base);
 	/* invalid value specified or crashkernel=0 */
 	if (ret || !crash_size)
 		return;
@@ -1066,7 +1066,7 @@ static void __init reserve_crashkernel(void)
 }
 #else
 static inline void reserve_crashkernel(void) {}
-#endif /* CONFIG_CRASH_RESERVE*/
+#endif /* CONFIG_KEXEC */
 
 void __init hyp_mode_check(void)
 {
@@ -1193,7 +1193,7 @@ void __init setup_arch(char **cmdline_p)
 
 #ifdef CONFIG_VT
 #if defined(CONFIG_VGA_CONSOLE)
-	vgacon_register_screen(&vgacon_screen_info);
+	conswitchp = &vga_con;
 #endif
 #endif
 
@@ -1201,10 +1201,20 @@ void __init setup_arch(char **cmdline_p)
 		mdesc->init_early();
 }
 
-bool arch_cpu_is_hotpluggable(int num)
+
+static int __init topology_init(void)
 {
-	return platform_can_hotplug_cpu(num);
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct cpuinfo_arm *cpuinfo = &per_cpu(cpu_data, cpu);
+		cpuinfo->cpu.hotpluggable = platform_can_hotplug_cpu(cpu);
+		register_cpu(&cpuinfo->cpu, cpu);
+	}
+
+	return 0;
 }
+subsys_initcall(topology_init);
 
 #ifdef CONFIG_HAVE_PROC_CPU
 static int __init proc_cpu_init(void)

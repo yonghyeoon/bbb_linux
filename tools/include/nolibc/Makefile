@@ -34,8 +34,6 @@ all_files := \
 		signal.h \
 		stackprotector.h \
 		std.h \
-		stdarg.h \
-		stdbool.h \
 		stdint.h \
 		stdlib.h \
 		string.h \

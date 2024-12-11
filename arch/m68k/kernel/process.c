@@ -38,7 +38,6 @@
 #include <asm/machdep.h>
 #include <asm/setup.h>
 
-#include "process.h"
 
 asmlinkage void ret_from_fork(void);
 asmlinkage void ret_from_kernel_thread(void);
@@ -117,7 +116,7 @@ asmlinkage int m68k_clone(struct pt_regs *regs)
 {
 	/* regs will be equal to current_pt_regs() */
 	struct kernel_clone_args args = {
-		.flags		= (u32)(regs->d1) & ~CSIGNAL,
+		.flags		= regs->d1 & ~CSIGNAL,
 		.pidfd		= (int __user *)regs->d3,
 		.child_tid	= (int __user *)regs->d4,
 		.parent_tid	= (int __user *)regs->d3,

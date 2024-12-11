@@ -138,7 +138,7 @@ int bench_futex_hash(int argc, const char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	cpu = perf_cpu_map__new_online_cpus();
+	cpu = perf_cpu_map__new(NULL);
 	if (!cpu)
 		goto errmem;
 
@@ -174,7 +174,7 @@ int bench_futex_hash(int argc, const char **argv)
 	pthread_attr_init(&thread_attr);
 	gettimeofday(&bench__start, NULL);
 
-	nrcpus = cpu__max_cpu().cpu;
+	nrcpus = perf_cpu_map__nr(cpu);
 	cpuset = CPU_ALLOC(nrcpus);
 	BUG_ON(!cpuset);
 	size = CPU_ALLOC_SIZE(nrcpus);

@@ -410,6 +410,7 @@ static int cmp_timings(const void *_a, const void *_b)
 static int tegra_emc_load_timings_from_dt(struct tegra_emc *emc,
 					  struct device_node *node)
 {
+	struct device_node *child;
 	struct emc_timing *timing;
 	int child_count;
 	int err;
@@ -427,13 +428,15 @@ static int tegra_emc_load_timings_from_dt(struct tegra_emc *emc,
 
 	timing = emc->timings;
 
-	for_each_child_of_node_scoped(node, child) {
+	for_each_child_of_node(node, child) {
 		if (of_node_name_eq(child, "lpddr2"))
 			continue;
 
 		err = load_one_timing_from_dt(emc, timing++, child);
-		if (err)
+		if (err) {
+			of_node_put(child);
 			return err;
+		}
 
 		emc->num_timings++;
 	}
@@ -947,7 +950,7 @@ to_tegra_emc_provider(struct icc_provider *provider)
 }
 
 static struct icc_node_data *
-emc_of_icc_xlate_extended(const struct of_phandle_args *spec, void *data)
+emc_of_icc_xlate_extended(struct of_phandle_args *spec, void *data)
 {
 	struct icc_provider *provider = data;
 	struct icc_node_data *ndata;

@@ -18,10 +18,8 @@
 #include <linux/slab.h>
 #include <linux/zstd.h>
 #include "misc.h"
-#include "fs.h"
-#include "btrfs_inode.h"
 #include "compression.h"
-#include "super.h"
+#include "ctree.h"
 
 #define ZSTD_BTRFS_MAX_WINDOWLOG 17
 #define ZSTD_BTRFS_MAX_INPUT (1 << ZSTD_BTRFS_MAX_WINDOWLOG)
@@ -147,7 +145,7 @@ static void zstd_reclaim_timer_fn(struct timer_list *timer)
 }
 
 /*
- * Calculate monotonic memory bounds.
+ * zstd_calc_ws_mem_sizes - calculate monotonic memory bounds
  *
  * It is possible based on the level configurations that a higher level
  * workspace uses less memory than a lower level workspace.  In order to reuse
@@ -220,8 +218,7 @@ void zstd_cleanup_workspace_manager(void)
 }
 
 /*
- * Find workspace for given level.
- *
+ * zstd_find_workspace - find workspace
  * @level: compression level
  *
  * This iterates over the set bits in the active_map beginning at the requested
@@ -259,8 +256,7 @@ static struct list_head *zstd_find_workspace(unsigned int level)
 }
 
 /*
- * Zstd get_workspace for level.
- *
+ * zstd_get_workspace - zstd's get_workspace
  * @level: compression level
  *
  * If @level is 0, then any compression level can be used.  Therefore, we begin
@@ -300,8 +296,7 @@ again:
 }
 
 /*
- * Zstd put_workspace.
- *
+ * zstd_put_workspace - zstd put_workspace
  * @ws: list_head for the workspace
  *
  * When putting back a workspace, we only need to update the LRU if we are of
@@ -375,63 +370,52 @@ fail:
 	return ERR_PTR(-ENOMEM);
 }
 
-int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
-			 u64 start, struct folio **folios, unsigned long *out_folios,
-			 unsigned long *total_in, unsigned long *total_out)
+int zstd_compress_pages(struct list_head *ws, struct address_space *mapping,
+		u64 start, struct page **pages, unsigned long *out_pages,
+		unsigned long *total_in, unsigned long *total_out)
 {
 	struct workspace *workspace = list_entry(ws, struct workspace, list);
 	zstd_cstream *stream;
 	int ret = 0;
-	int nr_folios = 0;
-	struct folio *in_folio = NULL;  /* The current folio to read. */
-	struct folio *out_folio = NULL; /* The current folio to write to. */
+	int nr_pages = 0;
+	struct page *in_page = NULL;  /* The current page to read */
+	struct page *out_page = NULL; /* The current page to write to */
 	unsigned long tot_in = 0;
 	unsigned long tot_out = 0;
 	unsigned long len = *total_out;
-	const unsigned long nr_dest_folios = *out_folios;
-	const u64 orig_end = start + len;
-	unsigned long max_out = nr_dest_folios * PAGE_SIZE;
-	unsigned int pg_off;
-	unsigned int cur_len;
+	const unsigned long nr_dest_pages = *out_pages;
+	unsigned long max_out = nr_dest_pages * PAGE_SIZE;
 	zstd_parameters params = zstd_get_btrfs_parameters(workspace->req_level,
 							   len);
 
-	*out_folios = 0;
+	*out_pages = 0;
 	*total_out = 0;
 	*total_in = 0;
 
 	/* Initialize the stream */
 	stream = zstd_init_cstream(&params, len, workspace->mem,
 			workspace->size);
-	if (unlikely(!stream)) {
-		struct btrfs_inode *inode = BTRFS_I(mapping->host);
-
-		btrfs_err(inode->root->fs_info,
-	"zstd compression init level %d failed, root %llu inode %llu offset %llu",
-			  workspace->req_level, btrfs_root_id(inode->root),
-			  btrfs_ino(inode), start);
+	if (!stream) {
+		pr_warn("BTRFS: zstd_init_cstream failed\n");
 		ret = -EIO;
 		goto out;
 	}
 
 	/* map in the first page of input data */
-	ret = btrfs_compress_filemap_get_folio(mapping, start, &in_folio);
-	if (ret < 0)
-		goto out;
-	pg_off = offset_in_page(start);
-	cur_len = btrfs_calc_input_length(orig_end, start);
-	workspace->in_buf.src = kmap_local_folio(in_folio, pg_off);
+	in_page = find_get_page(mapping, start >> PAGE_SHIFT);
+	workspace->in_buf.src = kmap_local_page(in_page);
 	workspace->in_buf.pos = 0;
-	workspace->in_buf.size = cur_len;
+	workspace->in_buf.size = min_t(size_t, len, PAGE_SIZE);
+
 
 	/* Allocate and map in the output buffer */
-	out_folio = btrfs_alloc_compr_folio();
-	if (out_folio == NULL) {
+	out_page = alloc_page(GFP_NOFS);
+	if (out_page == NULL) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	folios[nr_folios++] = out_folio;
-	workspace->out_buf.dst = folio_address(out_folio);
+	pages[nr_pages++] = out_page;
+	workspace->out_buf.dst = page_address(out_page);
 	workspace->out_buf.pos = 0;
 	workspace->out_buf.size = min_t(size_t, max_out, PAGE_SIZE);
 
@@ -440,14 +424,9 @@ int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
 
 		ret2 = zstd_compress_stream(stream, &workspace->out_buf,
 				&workspace->in_buf);
-		if (unlikely(zstd_is_error(ret2))) {
-			struct btrfs_inode *inode = BTRFS_I(mapping->host);
-
-			btrfs_warn(inode->root->fs_info,
-"zstd compression level %d failed, error %d root %llu inode %llu offset %llu",
-				   workspace->req_level, zstd_get_error_code(ret2),
-				   btrfs_root_id(inode->root), btrfs_ino(inode),
-				   start);
+		if (zstd_is_error(ret2)) {
+			pr_debug("BTRFS: zstd_compress_stream returned %d\n",
+					zstd_get_error_code(ret2));
 			ret = -EIO;
 			goto out;
 		}
@@ -471,17 +450,17 @@ int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
 		if (workspace->out_buf.pos == workspace->out_buf.size) {
 			tot_out += PAGE_SIZE;
 			max_out -= PAGE_SIZE;
-			if (nr_folios == nr_dest_folios) {
+			if (nr_pages == nr_dest_pages) {
 				ret = -E2BIG;
 				goto out;
 			}
-			out_folio = btrfs_alloc_compr_folio();
-			if (out_folio == NULL) {
+			out_page = alloc_page(GFP_NOFS);
+			if (out_page == NULL) {
 				ret = -ENOMEM;
 				goto out;
 			}
-			folios[nr_folios++] = out_folio;
-			workspace->out_buf.dst = folio_address(out_folio);
+			pages[nr_pages++] = out_page;
+			workspace->out_buf.dst = page_address(out_page);
 			workspace->out_buf.pos = 0;
 			workspace->out_buf.size = min_t(size_t, max_out,
 							PAGE_SIZE);
@@ -497,32 +476,22 @@ int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
 		if (workspace->in_buf.pos == workspace->in_buf.size) {
 			tot_in += PAGE_SIZE;
 			kunmap_local(workspace->in_buf.src);
-			workspace->in_buf.src = NULL;
-			folio_put(in_folio);
-			start += cur_len;
-			len -= cur_len;
-			ret = btrfs_compress_filemap_get_folio(mapping, start, &in_folio);
-			if (ret < 0)
-				goto out;
-			pg_off = offset_in_page(start);
-			cur_len = btrfs_calc_input_length(orig_end, start);
-			workspace->in_buf.src = kmap_local_folio(in_folio, pg_off);
+			put_page(in_page);
+			start += PAGE_SIZE;
+			len -= PAGE_SIZE;
+			in_page = find_get_page(mapping, start >> PAGE_SHIFT);
+			workspace->in_buf.src = kmap_local_page(in_page);
 			workspace->in_buf.pos = 0;
-			workspace->in_buf.size = cur_len;
+			workspace->in_buf.size = min_t(size_t, len, PAGE_SIZE);
 		}
 	}
 	while (1) {
 		size_t ret2;
 
 		ret2 = zstd_end_stream(stream, &workspace->out_buf);
-		if (unlikely(zstd_is_error(ret2))) {
-			struct btrfs_inode *inode = BTRFS_I(mapping->host);
-
-			btrfs_err(inode->root->fs_info,
-"zstd compression end level %d failed, error %d root %llu inode %llu offset %llu",
-				  workspace->req_level, zstd_get_error_code(ret2),
-				  btrfs_root_id(inode->root), btrfs_ino(inode),
-				  start);
+		if (zstd_is_error(ret2)) {
+			pr_debug("BTRFS: zstd_end_stream returned %d\n",
+					zstd_get_error_code(ret2));
 			ret = -EIO;
 			goto out;
 		}
@@ -538,17 +507,17 @@ int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
 
 		tot_out += PAGE_SIZE;
 		max_out -= PAGE_SIZE;
-		if (nr_folios == nr_dest_folios) {
+		if (nr_pages == nr_dest_pages) {
 			ret = -E2BIG;
 			goto out;
 		}
-		out_folio = btrfs_alloc_compr_folio();
-		if (out_folio == NULL) {
+		out_page = alloc_page(GFP_NOFS);
+		if (out_page == NULL) {
 			ret = -ENOMEM;
 			goto out;
 		}
-		folios[nr_folios++] = out_folio;
-		workspace->out_buf.dst = folio_address(out_folio);
+		pages[nr_pages++] = out_page;
+		workspace->out_buf.dst = page_address(out_page);
 		workspace->out_buf.pos = 0;
 		workspace->out_buf.size = min_t(size_t, max_out, PAGE_SIZE);
 	}
@@ -562,10 +531,10 @@ int zstd_compress_folios(struct list_head *ws, struct address_space *mapping,
 	*total_in = tot_in;
 	*total_out = tot_out;
 out:
-	*out_folios = nr_folios;
+	*out_pages = nr_pages;
 	if (workspace->in_buf.src) {
 		kunmap_local(workspace->in_buf.src);
-		folio_put(in_folio);
+		put_page(in_page);
 	}
 	return ret;
 }
@@ -573,28 +542,24 @@ out:
 int zstd_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 {
 	struct workspace *workspace = list_entry(ws, struct workspace, list);
-	struct folio **folios_in = cb->compressed_folios;
+	struct page **pages_in = cb->compressed_pages;
 	size_t srclen = cb->compressed_len;
 	zstd_dstream *stream;
 	int ret = 0;
-	unsigned long folio_in_index = 0;
-	unsigned long total_folios_in = DIV_ROUND_UP(srclen, PAGE_SIZE);
+	unsigned long page_in_index = 0;
+	unsigned long total_pages_in = DIV_ROUND_UP(srclen, PAGE_SIZE);
 	unsigned long buf_start;
 	unsigned long total_out = 0;
 
 	stream = zstd_init_dstream(
 			ZSTD_BTRFS_MAX_INPUT, workspace->mem, workspace->size);
-	if (unlikely(!stream)) {
-		struct btrfs_inode *inode = cb->bbio.inode;
-
-		btrfs_err(inode->root->fs_info,
-		"zstd decompression init failed, root %llu inode %llu offset %llu",
-			  btrfs_root_id(inode->root), btrfs_ino(inode), cb->start);
+	if (!stream) {
+		pr_debug("BTRFS: zstd_init_dstream failed\n");
 		ret = -EIO;
 		goto done;
 	}
 
-	workspace->in_buf.src = kmap_local_folio(folios_in[folio_in_index], 0);
+	workspace->in_buf.src = kmap_local_page(pages_in[page_in_index]);
 	workspace->in_buf.pos = 0;
 	workspace->in_buf.size = min_t(size_t, srclen, PAGE_SIZE);
 
@@ -607,13 +572,9 @@ int zstd_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 
 		ret2 = zstd_decompress_stream(stream, &workspace->out_buf,
 				&workspace->in_buf);
-		if (unlikely(zstd_is_error(ret2))) {
-			struct btrfs_inode *inode = cb->bbio.inode;
-
-			btrfs_err(inode->root->fs_info,
-		"zstd decompression failed, error %d root %llu inode %llu offset %llu",
-				  zstd_get_error_code(ret2), btrfs_root_id(inode->root),
-				  btrfs_ino(inode), cb->start);
+		if (zstd_is_error(ret2)) {
+			pr_debug("BTRFS: zstd_decompress_stream returned %d\n",
+					zstd_get_error_code(ret2));
 			ret = -EIO;
 			goto done;
 		}
@@ -635,15 +596,14 @@ int zstd_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 
 		if (workspace->in_buf.pos == workspace->in_buf.size) {
 			kunmap_local(workspace->in_buf.src);
-			folio_in_index++;
-			if (folio_in_index >= total_folios_in) {
+			page_in_index++;
+			if (page_in_index >= total_pages_in) {
 				workspace->in_buf.src = NULL;
 				ret = -EIO;
 				goto done;
 			}
 			srclen -= PAGE_SIZE;
-			workspace->in_buf.src =
-				kmap_local_folio(folios_in[folio_in_index], 0);
+			workspace->in_buf.src = kmap_local_page(pages_in[page_in_index]);
 			workspace->in_buf.pos = 0;
 			workspace->in_buf.size = min_t(size_t, srclen, PAGE_SIZE);
 		}
@@ -656,28 +616,25 @@ done:
 }
 
 int zstd_decompress(struct list_head *ws, const u8 *data_in,
-		struct folio *dest_folio, unsigned long dest_pgoff, size_t srclen,
+		struct page *dest_page, unsigned long start_byte, size_t srclen,
 		size_t destlen)
 {
 	struct workspace *workspace = list_entry(ws, struct workspace, list);
-	struct btrfs_fs_info *fs_info = btrfs_sb(folio_inode(dest_folio)->i_sb);
-	const u32 sectorsize = fs_info->sectorsize;
 	zstd_dstream *stream;
 	int ret = 0;
-	unsigned long to_copy = 0;
+	size_t ret2;
+	unsigned long total_out = 0;
+	unsigned long pg_offset = 0;
 
 	stream = zstd_init_dstream(
 			ZSTD_BTRFS_MAX_INPUT, workspace->mem, workspace->size);
-	if (unlikely(!stream)) {
-		struct btrfs_inode *inode = folio_to_inode(dest_folio);
-
-		btrfs_err(inode->root->fs_info,
-		"zstd decompression init failed, root %llu inode %llu offset %llu",
-			  btrfs_root_id(inode->root), btrfs_ino(inode),
-			  folio_pos(dest_folio));
+	if (!stream) {
+		pr_warn("BTRFS: zstd_init_dstream failed\n");
 		ret = -EIO;
 		goto finish;
 	}
+
+	destlen = min_t(size_t, destlen, PAGE_SIZE);
 
 	workspace->in_buf.src = data_in;
 	workspace->in_buf.pos = 0;
@@ -685,29 +642,54 @@ int zstd_decompress(struct list_head *ws, const u8 *data_in,
 
 	workspace->out_buf.dst = workspace->buf;
 	workspace->out_buf.pos = 0;
-	workspace->out_buf.size = sectorsize;
+	workspace->out_buf.size = PAGE_SIZE;
 
-	/*
-	 * Since both input and output buffers should not exceed one sector,
-	 * one call should end the decompression.
-	 */
-	ret = zstd_decompress_stream(stream, &workspace->out_buf, &workspace->in_buf);
-	if (unlikely(zstd_is_error(ret))) {
-		struct btrfs_inode *inode = folio_to_inode(dest_folio);
+	ret2 = 1;
+	while (pg_offset < destlen
+	       && workspace->in_buf.pos < workspace->in_buf.size) {
+		unsigned long buf_start;
+		unsigned long buf_offset;
+		unsigned long bytes;
 
-		btrfs_err(inode->root->fs_info,
-		"zstd decompression failed, error %d root %llu inode %llu offset %llu",
-			  zstd_get_error_code(ret), btrfs_root_id(inode->root),
-			  btrfs_ino(inode), folio_pos(dest_folio));
-		goto finish;
+		/* Check if the frame is over and we still need more input */
+		if (ret2 == 0) {
+			pr_debug("BTRFS: zstd_decompress_stream ended early\n");
+			ret = -EIO;
+			goto finish;
+		}
+		ret2 = zstd_decompress_stream(stream, &workspace->out_buf,
+				&workspace->in_buf);
+		if (zstd_is_error(ret2)) {
+			pr_debug("BTRFS: zstd_decompress_stream returned %d\n",
+					zstd_get_error_code(ret2));
+			ret = -EIO;
+			goto finish;
+		}
+
+		buf_start = total_out;
+		total_out += workspace->out_buf.pos;
+		workspace->out_buf.pos = 0;
+
+		if (total_out <= start_byte)
+			continue;
+
+		if (total_out > start_byte && buf_start < start_byte)
+			buf_offset = start_byte - buf_start;
+		else
+			buf_offset = 0;
+
+		bytes = min_t(unsigned long, destlen - pg_offset,
+				workspace->out_buf.size - buf_offset);
+
+		memcpy_to_page(dest_page, pg_offset,
+			       workspace->out_buf.dst + buf_offset, bytes);
+
+		pg_offset += bytes;
 	}
-	to_copy = workspace->out_buf.pos;
-	memcpy_to_folio(dest_folio, dest_pgoff, workspace->out_buf.dst, to_copy);
+	ret = 0;
 finish:
-	/* Error or early end. */
-	if (unlikely(to_copy < destlen)) {
-		ret = -EIO;
-		folio_zero_range(dest_folio, dest_pgoff + to_copy, destlen - to_copy);
+	if (pg_offset < destlen) {
+		memzero_page(dest_page, pg_offset, destlen - pg_offset);
 	}
 	return ret;
 }

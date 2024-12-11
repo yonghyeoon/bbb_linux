@@ -3,16 +3,12 @@
  * Common place for both 32- and 64-bit entry routines.
  */
 
-#include <linux/export.h>
 #include <linux/linkage.h>
+#include <asm/export.h>
 #include <asm/msr-index.h>
 #include <asm/unwind_hints.h>
 #include <asm/segment.h>
 #include <asm/cache.h>
-#include <asm/cpufeatures.h>
-#include <asm/nospec-branch.h>
-
-#include "calling.h"
 
 .pushsection .noinstr.text, "ax"
 
@@ -21,9 +17,6 @@ SYM_FUNC_START(entry_ibpb)
 	movl	$PRED_CMD_IBPB, %eax
 	xorl	%edx, %edx
 	wrmsr
-
-	/* Make sure IBPB clears return stack preductions too. */
-	FILL_RETURN_BUFFER %rax, RSB_CLEAR_LOOPS, X86_BUG_IBPB_NO_RET
 	RET
 SYM_FUNC_END(entry_ibpb)
 /* For KVM */
@@ -50,4 +43,3 @@ EXPORT_SYMBOL_GPL(mds_verw_sel);
 
 .popsection
 
-THUNK warn_thunk_thunk, __warn_thunk

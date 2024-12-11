@@ -5,11 +5,10 @@
  * Copyright (c) 2014, Intel Corporation.
  */
 
-#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
-#include <linux/mod_devicetable.h>
+#include <linux/acpi.h>
 #include <linux/regmap.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/trigger.h>
@@ -37,16 +36,12 @@
 
 #define MXC4005_REG_INT_CLR1		0x01
 #define MXC4005_REG_INT_CLR1_BIT_DRDYC	0x01
-#define MXC4005_REG_INT_CLR1_SW_RST	0x10
 
 #define MXC4005_REG_CONTROL		0x0D
 #define MXC4005_REG_CONTROL_MASK_FSR	GENMASK(6, 5)
 #define MXC4005_CONTROL_FSR_SHIFT	5
 
 #define MXC4005_REG_DEVICE_ID		0x0E
-
-/* Datasheet does not specify a reset time, this is a conservative guess */
-#define MXC4005_RESET_TIME_US		2000
 
 enum mxc4005_axis {
 	AXIS_X,
@@ -65,15 +60,12 @@ struct mxc4005_data {
 	struct mutex mutex;
 	struct regmap *regmap;
 	struct iio_trigger *dready_trig;
-	struct iio_mount_matrix orientation;
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		__be16 chans[3];
 		s64 timestamp __aligned(8);
 	} scan;
 	bool trigger_enabled;
-	unsigned int control;
-	unsigned int int_mask1;
 };
 
 /*
@@ -273,20 +265,6 @@ static int mxc4005_write_raw(struct iio_dev *indio_dev,
 	}
 }
 
-static const struct iio_mount_matrix *
-mxc4005_get_mount_matrix(const struct iio_dev *indio_dev,
-			   const struct iio_chan_spec *chan)
-{
-	struct mxc4005_data *data = iio_priv(indio_dev);
-
-	return &data->orientation;
-}
-
-static const struct iio_chan_spec_ext_info mxc4005_ext_info[] = {
-	IIO_MOUNT_MATRIX(IIO_SHARED_BY_TYPE, mxc4005_get_mount_matrix),
-	{ }
-};
-
 static const struct iio_info mxc4005_info = {
 	.read_raw	= mxc4005_read_raw,
 	.write_raw	= mxc4005_write_raw,
@@ -313,7 +291,6 @@ static const unsigned long mxc4005_scan_masks[] = {
 		.shift = 4,					\
 		.endianness = IIO_BE,				\
 	},							\
-	.ext_info = mxc4005_ext_info,				\
 }
 
 static const struct iio_chan_spec mxc4005_channels[] = {
@@ -372,7 +349,6 @@ static int mxc4005_set_trigger_state(struct iio_trigger *trig,
 		return ret;
 	}
 
-	data->int_mask1 = val;
 	data->trigger_enabled = state;
 	mutex_unlock(&data->mutex);
 
@@ -407,13 +383,6 @@ static int mxc4005_chip_init(struct mxc4005_data *data)
 	}
 
 	dev_dbg(data->dev, "MXC4005 chip id %02x\n", reg);
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_CLR1,
-			   MXC4005_REG_INT_CLR1_SW_RST);
-	if (ret < 0)
-		return dev_err_probe(data->dev, ret, "resetting chip\n");
-
-	fsleep(MXC4005_RESET_TIME_US);
 
 	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK0, 0);
 	if (ret < 0)
@@ -455,12 +424,6 @@ static int mxc4005_probe(struct i2c_client *client)
 	}
 
 	mutex_init(&data->mutex);
-
-	if (!iio_read_acpi_mount_matrix(&client->dev, &data->orientation, "ROTM")) {
-		ret = iio_read_mount_matrix(&client->dev, &data->orientation);
-		if (ret)
-			return ret;
-	}
 
 	indio_dev->channels = mxc4005_channels;
 	indio_dev->num_channels = ARRAY_SIZE(mxc4005_channels);
@@ -516,86 +479,24 @@ static int mxc4005_probe(struct i2c_client *client)
 	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
-static int mxc4005_suspend(struct device *dev)
-{
-	struct iio_dev *indio_dev = dev_get_drvdata(dev);
-	struct mxc4005_data *data = iio_priv(indio_dev);
-	int ret;
-
-	/* Save control to restore it on resume */
-	ret = regmap_read(data->regmap, MXC4005_REG_CONTROL, &data->control);
-	if (ret < 0)
-		dev_err(data->dev, "failed to read reg_control\n");
-
-	return ret;
-}
-
-static int mxc4005_resume(struct device *dev)
-{
-	struct iio_dev *indio_dev = dev_get_drvdata(dev);
-	struct mxc4005_data *data = iio_priv(indio_dev);
-	int ret;
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_CLR1,
-			   MXC4005_REG_INT_CLR1_SW_RST);
-	if (ret) {
-		dev_err(data->dev, "failed to reset chip: %d\n", ret);
-		return ret;
-	}
-
-	fsleep(MXC4005_RESET_TIME_US);
-
-	ret = regmap_write(data->regmap, MXC4005_REG_CONTROL, data->control);
-	if (ret) {
-		dev_err(data->dev, "failed to restore control register\n");
-		return ret;
-	}
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK0, 0);
-	if (ret) {
-		dev_err(data->dev, "failed to restore interrupt 0 mask\n");
-		return ret;
-	}
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK1, data->int_mask1);
-	if (ret) {
-		dev_err(data->dev, "failed to restore interrupt 1 mask\n");
-		return ret;
-	}
-
-	return 0;
-}
-
-static DEFINE_SIMPLE_DEV_PM_OPS(mxc4005_pm_ops, mxc4005_suspend, mxc4005_resume);
-
 static const struct acpi_device_id mxc4005_acpi_match[] = {
 	{"MXC4005",	0},
 	{"MXC6655",	0},
-	{"MDA6655",	0},
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, mxc4005_acpi_match);
 
-static const struct of_device_id mxc4005_of_match[] = {
-	{ .compatible = "memsic,mxc4005", },
-	{ .compatible = "memsic,mxc6655", },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, mxc4005_of_match);
-
 static const struct i2c_device_id mxc4005_id[] = {
-	{ "mxc4005" },
-	{ "mxc6655" },
-	{ }
+	{"mxc4005",	0},
+	{"mxc6655",	0},
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, mxc4005_id);
 
 static struct i2c_driver mxc4005_driver = {
 	.driver = {
 		.name = MXC4005_DRV_NAME,
-		.acpi_match_table = mxc4005_acpi_match,
-		.of_match_table = mxc4005_of_match,
-		.pm = pm_sleep_ptr(&mxc4005_pm_ops),
+		.acpi_match_table = ACPI_PTR(mxc4005_acpi_match),
 	},
 	.probe		= mxc4005_probe,
 	.id_table	= mxc4005_id,

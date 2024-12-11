@@ -32,14 +32,13 @@
 
 #include <drm/display/drm_dp_helper.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_fixed.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
 
-struct edid;
-struct drm_edid;
 struct radeon_bo;
 struct radeon_device;
 
@@ -263,7 +262,8 @@ struct radeon_mode_info {
 	/* Output CSC */
 	struct drm_property *output_csc_property;
 	/* hardcoded DFP edid from BIOS */
-	const struct drm_edid *bios_hardcoded_edid;
+	struct edid *bios_hardcoded_edid;
+	int bios_hardcoded_edid_size;
 
 	/* firmware flags */
 	u16 firmware_flags;
@@ -603,7 +603,8 @@ struct atom_memory_info {
 
 #define MAX_AC_TIMING_ENTRIES 16
 
-struct atom_memory_clock_range_table {
+struct atom_memory_clock_range_table
+{
 	u8 num_entries;
 	u8 rsv[3];
 	u32 mclk[MAX_AC_TIMING_ENTRIES];
@@ -631,12 +632,14 @@ struct atom_mc_reg_table {
 
 #define MAX_VOLTAGE_ENTRIES 32
 
-struct atom_voltage_table_entry {
+struct atom_voltage_table_entry
+{
 	u16 value;
 	u32 smio_low;
 };
 
-struct atom_voltage_table {
+struct atom_voltage_table
+{
 	u32 count;
 	u32 mask_low;
 	u32 phase_delay;
@@ -700,6 +703,8 @@ extern u16 radeon_encoder_get_dp_bridge_encoder_id(struct drm_encoder *encoder);
 extern u16 radeon_connector_encoder_get_dp_bridge_encoder_id(struct drm_connector *connector);
 extern bool radeon_connector_is_dp12_capable(struct drm_connector *connector);
 extern int radeon_get_monitor_bpc(struct drm_connector *connector);
+
+extern struct edid *radeon_connector_edid(struct drm_connector *connector);
 
 extern void radeon_connector_hotplug(struct drm_connector *connector);
 extern int radeon_dp_mode_valid_helper(struct drm_connector *connector,

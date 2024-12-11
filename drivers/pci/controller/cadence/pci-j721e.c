@@ -48,7 +48,7 @@ enum link_status {
 #define J721E_MODE_RC			BIT(7)
 #define LANE_COUNT(n)			((n) << 8)
 
-#define ACSPCIE_PAD_DISABLE_MASK	GENMASK(1, 0)
+#define ACSPCIE_PAD_ENABLE_MASK		GENMASK(1, 0)
 #define GENERATION_SEL_MASK		GENMASK(1, 0)
 
 struct j721e_pcie {
@@ -226,34 +226,28 @@ static int j721e_pcie_set_lane_count(struct j721e_pcie *pcie,
 	return ret;
 }
 
-static int j721e_enable_acspcie_refclk(struct j721e_pcie *pcie,
-				       struct regmap *syscon)
+static int j721e_acspcie_pad_enable(struct j721e_pcie *pcie, struct regmap *syscon)
 {
 	struct device *dev = pcie->cdns_pcie->dev;
 	struct device_node *node = dev->of_node;
-	u32 mask = ACSPCIE_PAD_DISABLE_MASK;
+	u32 mask = ACSPCIE_PAD_ENABLE_MASK;
 	struct of_phandle_args args;
 	u32 val;
 	int ret;
 
-	ret = of_parse_phandle_with_fixed_args(node,
-					       "ti,syscon-acspcie-proxy-ctrl",
+	ret = of_parse_phandle_with_fixed_args(node, "ti,syscon-acspcie-proxy-ctrl",
 					       1, 0, &args);
-	if (ret) {
-		dev_err(dev,
-			"ti,syscon-acspcie-proxy-ctrl has invalid arguments\n");
-		return ret;
+	if (!ret) {
+		/* PAD Enable Bits have to be cleared to in order to enable output */
+		val = ~(args.args[0]);
+		ret = regmap_update_bits(syscon, 0, mask, val);
+		if (ret)
+			dev_err(dev, "Enabling ACSPCIE PAD output failed: %d\n", ret);
+	} else {
+		dev_err(dev, "ti,syscon-acspcie-proxy-ctrl has invalid parameters\n");
 	}
 
-	/* Clear PAD IO disable bits to enable refclk output */
-	val = ~(args.args[0]);
-	ret = regmap_update_bits(syscon, 0, mask, val);
-	if (ret) {
-		dev_err(dev, "failed to enable ACSPCIE refclk: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
+	return ret;
 }
 
 static int j721e_pcie_ctrl_init(struct j721e_pcie *pcie)
@@ -295,13 +289,15 @@ static int j721e_pcie_ctrl_init(struct j721e_pcie *pcie)
 		return ret;
 	}
 
-	/* Enable ACSPCIE refclk output if the optional property exists */
-	syscon = syscon_regmap_lookup_by_phandle_optional(node,
-						"ti,syscon-acspcie-proxy-ctrl");
-	if (!syscon)
-		return 0;
+	/* Enable ACSPCIe PAD IO Buffers if the optional property exists */
+	syscon = syscon_regmap_lookup_by_phandle_optional(node, "ti,syscon-acspcie-proxy-ctrl");
+	if (syscon) {
+		ret = j721e_acspcie_pad_enable(pcie, syscon);
+		if (ret)
+			return ret;
+	}
 
-	return j721e_enable_acspcie_refclk(pcie, syscon);
+	return 0;
 }
 
 static int cdns_ti_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
@@ -386,6 +382,13 @@ static const struct j721e_pcie_data j784s4_pcie_ep_data = {
 	.max_lanes = 4,
 };
 
+static const struct j721e_pcie_data j722s_pcie_rc_data = {
+	.mode = PCI_MODE_RC,
+	.linkdown_irq_regfield = J7200_LINK_DOWN,
+	.byte_access_allowed = true,
+	.max_lanes = 1,
+};
+
 static const struct of_device_id of_j721e_pcie_match[] = {
 	{
 		.compatible = "ti,j721e-pcie-host",
@@ -418,6 +421,10 @@ static const struct of_device_id of_j721e_pcie_match[] = {
 	{
 		.compatible = "ti,j784s4-pcie-ep",
 		.data = &j784s4_pcie_ep_data,
+	},
+	{
+		.compatible = "ti,j722s-pcie-host",
+		.data = &j722s_pcie_rc_data,
 	},
 	{},
 };
@@ -572,12 +579,12 @@ static int j721e_pcie_probe(struct platform_device *pdev)
 		pcie->refclk = clk;
 
 		/*
-		 * The "Power Sequencing and Reset Signal Timings" table of the
-		 * PCI Express Card Electromechanical Specification, Revision
-		 * 5.1, Section 2.9.2, Symbol "T_PERST-CLK", indicates PERST#
-		 * should be deasserted after minimum of 100us once REFCLK is
-		 * stable. The REFCLK to the connector in RC mode is selected
-		 * while enabling the PHY. So deassert PERST# after 100 us.
+		 * "Power Sequencing and Reset Signal Timings" table (section
+		 * 2.9.2) in PCI EXPRESS CARD ELECTROMECHANICAL SPECIFICATION,
+		 * REV. 5.1 indicates PERST# should be deasserted after minimum
+		 * of 100us once REFCLK is stable (symbol T_PERST-CLK).
+		 * The REFCLK to the connector in RC mode is selected while
+		 * enabling the PHY. So deassert PERST# after 100 us.
 		 */
 		if (gpiod) {
 			fsleep(PCIE_T_PERST_CLK_US);
@@ -671,12 +678,12 @@ static int j721e_pcie_resume_noirq(struct device *dev)
 			return ret;
 
 		/*
-		 * The "Power Sequencing and Reset Signal Timings" table of the
-		 * PCI Express Card Electromechanical Specification, Revision
-		 * 5.1, Section 2.9.2, Symbol "T_PERST-CLK", indicates PERST#
-		 * should be deasserted after minimum of 100us once REFCLK is
-		 * stable. The REFCLK to the connector in RC mode is selected
-		 * while enabling the PHY. So deassert PERST# after 100 us.
+		 * "Power Sequencing and Reset Signal Timings" table (section
+		 * 2.9.2) in PCI EXPRESS CARD ELECTROMECHANICAL SPECIFICATION,
+		 * REV. 5.1 indicates PERST# should be deasserted after minimum
+		 * of 100us once REFCLK is stable (symbol T_PERST-CLK).
+		 * The REFCLK to the connector in RC mode is selected while
+		 * enabling the PHY. So deassert PERST# after 100 us.
 		 */
 		if (pcie->reset_gpio) {
 			fsleep(PCIE_T_PERST_CLK_US);

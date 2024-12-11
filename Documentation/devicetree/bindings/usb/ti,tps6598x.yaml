@@ -51,9 +51,6 @@ properties:
     items:
       - const: irq
 
-  connector:
-    $ref: /schemas/connector/usb-connector.yaml#
-
   firmware-name:
     description: |
       Should contain the name of the default patch binary
@@ -90,7 +87,7 @@ allOf:
         reg:
           maxItems: 1
 
-additionalProperties: false
+additionalProperties: true
 
 examples:
   - |

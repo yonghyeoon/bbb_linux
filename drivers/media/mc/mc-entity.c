@@ -197,7 +197,6 @@ int media_entity_pads_init(struct media_entity *entity, u16 num_pads,
 	struct media_device *mdev = entity->graph_obj.mdev;
 	struct media_pad *iter;
 	unsigned int i = 0;
-	int ret = 0;
 
 	if (num_pads >= MEDIA_ENTITY_MAX_PADS)
 		return -E2BIG;
@@ -211,27 +210,15 @@ int media_entity_pads_init(struct media_entity *entity, u16 num_pads,
 	media_entity_for_each_pad(entity, iter) {
 		iter->entity = entity;
 		iter->index = i++;
-
-		if (hweight32(iter->flags & (MEDIA_PAD_FL_SINK |
-					     MEDIA_PAD_FL_SOURCE)) != 1) {
-			ret = -EINVAL;
-			break;
-		}
-
 		if (mdev)
 			media_gobj_create(mdev, MEDIA_GRAPH_PAD,
 					  &iter->graph_obj);
 	}
 
-	if (ret && mdev) {
-		media_entity_for_each_pad(entity, iter)
-			media_gobj_destroy(&iter->graph_obj);
-	}
-
 	if (mdev)
 		mutex_unlock(&mdev->graph_mutex);
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(media_entity_pads_init);
 
@@ -618,12 +605,6 @@ static int media_pipeline_explore_next_link(struct media_pipeline *pipe,
 	origin = entry->pad;
 	link = list_entry(entry->links, typeof(*link), list);
 	last_link = media_pipeline_walk_pop(walk);
-
-	if ((link->flags & MEDIA_LNK_FL_LINK_TYPE) != MEDIA_LNK_FL_DATA_LINK) {
-		dev_dbg(walk->mdev->dev,
-			"media pipeline: skipping link (not data-link)\n");
-		return 0;
-	}
 
 	dev_dbg(walk->mdev->dev,
 		"media pipeline: exploring link '%s':%u -> '%s':%u\n",

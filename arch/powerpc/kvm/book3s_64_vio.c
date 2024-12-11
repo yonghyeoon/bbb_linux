@@ -20,7 +20,6 @@
 #include <linux/iommu.h>
 #include <linux/file.h>
 #include <linux/mm.h>
-#include <linux/rcupdate_wait.h>
 
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s.h>
@@ -78,8 +77,8 @@ static void kvm_spapr_tce_liobn_put(struct kref *kref)
 	call_rcu(&stit->rcu, kvm_spapr_tce_iommu_table_free);
 }
 
-void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
-				       struct iommu_group *grp)
+extern void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
+		struct iommu_group *grp)
 {
 	int i;
 	struct kvmppc_spapr_tce_table *stt;
@@ -106,8 +105,8 @@ void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
 	rcu_read_unlock();
 }
 
-long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
-				      struct iommu_group *grp)
+extern long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
+		struct iommu_group *grp)
 {
 	struct kvmppc_spapr_tce_table *stt = NULL;
 	bool found = false;
@@ -118,28 +117,26 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 	struct fd f;
 
 	f = fdget(tablefd);
-	if (!fd_file(f))
+	if (!f.file)
 		return -EBADF;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(stt, &kvm->arch.spapr_tce_tables, list) {
-		if (stt == fd_file(f)->private_data) {
+		if (stt == f.file->private_data) {
 			found = true;
 			break;
 		}
 	}
 	rcu_read_unlock();
 
-	if (!found) {
-		fdput(f);
+	fdput(f);
+
+	if (!found)
 		return -EINVAL;
-	}
 
 	table_group = iommu_group_get_iommudata(grp);
-	if (WARN_ON(!table_group)) {
-		fdput(f);
+	if (WARN_ON(!table_group))
 		return -EFAULT;
-	}
 
 	for (i = 0; i < IOMMU_TABLE_GROUP_MAX_TABLES; ++i) {
 		struct iommu_table *tbltmp = table_group->tables[i];
@@ -160,10 +157,8 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 			break;
 		}
 	}
-	if (!tbl) {
-		fdput(f);
+	if (!tbl)
 		return -EINVAL;
-	}
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(stit, &stt->iommu_tables, next) {
@@ -174,7 +169,6 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 			/* stit is being destroyed */
 			iommu_tce_table_put(tbl);
 			rcu_read_unlock();
-			fdput(f);
 			return -ENOTTY;
 		}
 		/*
@@ -182,7 +176,6 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 		 * its KVM reference counter and can return.
 		 */
 		rcu_read_unlock();
-		fdput(f);
 		return 0;
 	}
 	rcu_read_unlock();
@@ -190,7 +183,6 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 	stit = kzalloc(sizeof(*stit), GFP_KERNEL);
 	if (!stit) {
 		iommu_tce_table_put(tbl);
-		fdput(f);
 		return -ENOMEM;
 	}
 
@@ -199,7 +191,6 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 
 	list_add_rcu(&stit->next, &stt->iommu_tables);
 
-	fdput(f);
 	return 0;
 }
 
@@ -795,12 +786,12 @@ long kvmppc_h_get_tce(struct kvm_vcpu *vcpu, unsigned long liobn,
 	idx = (ioba >> stt->page_shift) - stt->offset;
 	page = stt->pages[idx / TCES_PER_PAGE];
 	if (!page) {
-		kvmppc_set_gpr(vcpu, 4, 0);
+		vcpu->arch.regs.gpr[4] = 0;
 		return H_SUCCESS;
 	}
 	tbl = (u64 *)page_address(page);
 
-	kvmppc_set_gpr(vcpu, 4, tbl[idx % TCES_PER_PAGE]);
+	vcpu->arch.regs.gpr[4] = tbl[idx % TCES_PER_PAGE];
 
 	return H_SUCCESS;
 }

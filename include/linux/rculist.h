@@ -191,10 +191,7 @@ static inline void hlist_del_init_rcu(struct hlist_node *n)
  * @old : the element to be replaced
  * @new : the new element to insert
  *
- * The @old entry will be replaced with the @new entry atomically from
- * the perspective of concurrent readers.  It is the caller's responsibility
- * to synchronize with concurrent updaters, if any.
- *
+ * The @old entry will be replaced with the @new entry atomically.
  * Note: @old should not be empty.
  */
 static inline void list_replace_rcu(struct list_head *old,
@@ -358,7 +355,7 @@ static inline void list_splice_tail_init_rcu(struct list_head *list,
 })
 
 /**
- * list_next_or_null_rcu - get the next element from a list
+ * list_next_or_null_rcu - get the first element from a list
  * @head:	the head for the list.
  * @ptr:        the list head to take the next element from.
  * @type:       the type of the struct this is embedded in.
@@ -522,9 +519,7 @@ static inline void hlist_del_rcu(struct hlist_node *n)
  * @old : the element to be replaced
  * @new : the new element to insert
  *
- * The @old entry will be replaced with the @new entry atomically from
- * the perspective of concurrent readers.  It is the caller's responsibility
- * to synchronize with concurrent updaters, if any.
+ * The @old entry will be replaced with the @new entry atomically.
  */
 static inline void hlist_replace_rcu(struct hlist_node *old,
 					struct hlist_node *new)

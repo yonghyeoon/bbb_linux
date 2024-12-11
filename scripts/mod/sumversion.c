@@ -8,8 +8,6 @@
 #include <errno.h>
 #include <string.h>
 #include <limits.h>
-
-#include <xalloc.h>
 #include "modpost.h"
 
 /*
@@ -307,7 +305,7 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 	const char *base;
 	int dirlen, ret = 0, check_files = 0;
 
-	cmd = xmalloc(strlen(objfile) + sizeof("..cmd"));
+	cmd = NOFAIL(malloc(strlen(objfile) + sizeof("..cmd")));
 
 	base = strrchr(objfile, '/');
 	if (base) {
@@ -318,7 +316,7 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 		dirlen = 0;
 		sprintf(cmd, ".%s.cmd", objfile);
 	}
-	dir = xmalloc(dirlen + 1);
+	dir = NOFAIL(malloc(dirlen + 1));
 	strncpy(dir, objfile, dirlen);
 	dir[dirlen] = '\0';
 
@@ -392,7 +390,7 @@ out_file:
 /* Calc and record src checksum. */
 void get_src_version(const char *modname, char sum[], unsigned sumlen)
 {
-	char *buf, *pos;
+	char *buf;
 	struct md4_ctx md;
 	char *fname;
 	char filelist[PATH_MAX + 1];
@@ -401,10 +399,9 @@ void get_src_version(const char *modname, char sum[], unsigned sumlen)
 	snprintf(filelist, sizeof(filelist), "%s.mod", modname);
 
 	buf = read_text_file(filelist);
-	pos = buf;
 
 	md4_init(&md);
-	while ((fname = strsep(&pos, "\n"))) {
+	while ((fname = strsep(&buf, "\n"))) {
 		if (!*fname)
 			continue;
 		if (!(is_static_library(fname)) &&

@@ -16,6 +16,7 @@
  */
 #define MMU_FTR_HPTE_TABLE		ASM_CONST(0x00000001)
 #define MMU_FTR_TYPE_8xx		ASM_CONST(0x00000002)
+#define MMU_FTR_TYPE_40x		ASM_CONST(0x00000004)
 #define MMU_FTR_TYPE_44x		ASM_CONST(0x00000008)
 #define MMU_FTR_TYPE_FSL_E		ASM_CONST(0x00000010)
 #define MMU_FTR_TYPE_47x		ASM_CONST(0x00000020)
@@ -132,7 +133,6 @@
 #define MMU_FTRS_POWER8		MMU_FTRS_POWER6
 #define MMU_FTRS_POWER9		MMU_FTRS_POWER6
 #define MMU_FTRS_POWER10	MMU_FTRS_POWER6
-#define MMU_FTRS_POWER11	MMU_FTRS_POWER6
 #define MMU_FTRS_CELL		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
 				MMU_FTR_CI_LARGE_PAGE
 #define MMU_FTRS_PA6T		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
@@ -151,6 +151,9 @@ enum {
 #endif
 #ifdef CONFIG_PPC_8xx
 		MMU_FTR_TYPE_8xx |
+#endif
+#ifdef CONFIG_40x
+		MMU_FTR_TYPE_40x |
 #endif
 #ifdef CONFIG_PPC_47x
 		MMU_FTR_TYPE_47x | MMU_FTR_USE_TLBIVAX_BCAST | MMU_FTR_LOCK_BCAST_INVAL |
@@ -198,6 +201,9 @@ enum {
 #ifdef CONFIG_PPC_8xx
 #define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_8xx
 #endif
+#ifdef CONFIG_40x
+#define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_40x
+#endif
 #ifdef CONFIG_PPC_47x
 #define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_47x
 #elif defined(CONFIG_44x)
@@ -239,11 +245,12 @@ static __always_inline bool mmu_has_feature(unsigned long feature)
 {
 	int i;
 
+#ifndef __clang__ /* clang can't cope with this */
 	BUILD_BUG_ON(!__builtin_constant_p(feature));
-	BUILD_BUG_ON(__builtin_popcountl(feature) > 1);
+#endif
 
 #ifdef CONFIG_JUMP_LABEL_FEATURE_CHECK_DEBUG
-	if (!static_key_feature_checks_initialized) {
+	if (!static_key_initialized) {
 		printk("Warning! mmu_has_feature() used prior to jump label init!\n");
 		dump_stack();
 		return early_mmu_has_feature(feature);
@@ -323,10 +330,17 @@ static __always_inline bool early_radix_enabled(void)
 	return early_mmu_has_feature(MMU_FTR_TYPE_RADIX);
 }
 
+#ifdef CONFIG_STRICT_KERNEL_RWX
 static inline bool strict_kernel_rwx_enabled(void)
 {
-	return IS_ENABLED(CONFIG_STRICT_KERNEL_RWX) && rodata_enabled;
+	return rodata_enabled;
 }
+#else
+static inline bool strict_kernel_rwx_enabled(void)
+{
+	return false;
+}
+#endif
 
 static inline bool strict_module_rwx_enabled(void)
 {
@@ -396,6 +410,10 @@ extern void *abatron_pteptrs[2];
 #include <asm/book3s/32/mmu-hash.h>
 #elif defined(CONFIG_PPC_MMU_NOHASH)
 #include <asm/nohash/mmu.h>
+#endif
+
+#if defined(CONFIG_FA_DUMP) || defined(CONFIG_PRESERVE_FA_DUMP)
+#define __HAVE_ARCH_RESERVED_KERNEL_PAGES
 #endif
 
 #endif /* __KERNEL__ */

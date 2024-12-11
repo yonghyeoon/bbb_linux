@@ -30,7 +30,7 @@
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/platform_data/mv_usb.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "mv_udc.h"
 
@@ -1451,7 +1451,7 @@ udc_prime_status(struct mv_udc *udc, u8 direction, u16 status, bool empty)
 
 	req = udc->status_req;
 
-	/* fill in the request structure */
+	/* fill in the reqest structure */
 	if (empty == false) {
 		*((u16 *) req->req.buf) = cpu_to_le16(status);
 		req->req.length = 2;

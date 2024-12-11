@@ -68,7 +68,7 @@ struct amdgpu_acpi_xcc_info {
 struct amdgpu_acpi_dev_info {
 	struct list_head list;
 	struct list_head xcc_list;
-	uint32_t sbdf;
+	uint16_t bdf;
 	uint16_t supp_xcp_mode;
 	uint16_t xcp_mode;
 	uint16_t mem_mode;
@@ -147,7 +147,6 @@ static union acpi_object *amdgpu_atif_call(struct amdgpu_atif *atif,
 					   struct acpi_buffer *params)
 {
 	acpi_status status;
-	union acpi_object *obj;
 	union acpi_object atif_arg_elements[2];
 	struct acpi_object_list atif_arg;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
@@ -170,24 +169,16 @@ static union acpi_object *amdgpu_atif_call(struct amdgpu_atif *atif,
 
 	status = acpi_evaluate_object(atif->handle, NULL, &atif_arg,
 				      &buffer);
-	obj = (union acpi_object *)buffer.pointer;
 
-	/* Fail if calling the method fails */
-	if (ACPI_FAILURE(status)) {
+	/* Fail only if calling the method fails and ATIF is supported */
+	if (ACPI_FAILURE(status) && status != AE_NOT_FOUND) {
 		DRM_DEBUG_DRIVER("failed to evaluate ATIF got %s\n",
 				 acpi_format_exception(status));
-		kfree(obj);
+		kfree(buffer.pointer);
 		return NULL;
 	}
 
-	if (obj->type != ACPI_TYPE_BUFFER) {
-		DRM_DEBUG_DRIVER("bad object returned from ATIF: %d\n",
-				 obj->type);
-		kfree(obj);
-		return NULL;
-	}
-
-	return obj;
+	return buffer.pointer;
 }
 
 /**
@@ -392,8 +383,6 @@ static int amdgpu_atif_query_backlight_caps(struct amdgpu_atif *atif)
 			characteristics.min_input_signal;
 	atif->backlight_caps.max_input_signal =
 			characteristics.max_input_signal;
-	atif->backlight_caps.ac_level = characteristics.ac_level;
-	atif->backlight_caps.dc_level = characteristics.dc_level;
 out:
 	kfree(info);
 	return err;
@@ -938,7 +927,7 @@ static acpi_status amdgpu_acpi_get_node_id(acpi_handle handle,
 #endif
 }
 
-static struct amdgpu_acpi_dev_info *amdgpu_acpi_get_dev(u32 sbdf)
+static struct amdgpu_acpi_dev_info *amdgpu_acpi_get_dev(u16 bdf)
 {
 	struct amdgpu_acpi_dev_info *acpi_dev;
 
@@ -946,14 +935,14 @@ static struct amdgpu_acpi_dev_info *amdgpu_acpi_get_dev(u32 sbdf)
 		return NULL;
 
 	list_for_each_entry(acpi_dev, &amdgpu_acpi_dev_list, list)
-		if (acpi_dev->sbdf == sbdf)
+		if (acpi_dev->bdf == bdf)
 			return acpi_dev;
 
 	return NULL;
 }
 
 static int amdgpu_acpi_dev_init(struct amdgpu_acpi_dev_info **dev_info,
-				struct amdgpu_acpi_xcc_info *xcc_info, u32 sbdf)
+				struct amdgpu_acpi_xcc_info *xcc_info, u16 bdf)
 {
 	struct amdgpu_acpi_dev_info *tmp;
 	union acpi_object *obj;
@@ -966,7 +955,7 @@ static int amdgpu_acpi_dev_init(struct amdgpu_acpi_dev_info **dev_info,
 
 	INIT_LIST_HEAD(&tmp->xcc_list);
 	INIT_LIST_HEAD(&tmp->list);
-	tmp->sbdf = sbdf;
+	tmp->bdf = bdf;
 
 	obj = acpi_evaluate_dsm_typed(xcc_info->handle, &amd_xcc_dsm_guid, 0,
 				      AMD_XCC_DSM_GET_SUPP_MODE, NULL,
@@ -1018,7 +1007,7 @@ static int amdgpu_acpi_dev_init(struct amdgpu_acpi_dev_info **dev_info,
 
 	DRM_DEBUG_DRIVER(
 		"New dev(%x): Supported xcp mode: %x curr xcp_mode : %x mem mode : %x, tmr base: %llx tmr size: %llx  ",
-		tmp->sbdf, tmp->supp_xcp_mode, tmp->xcp_mode, tmp->mem_mode,
+		tmp->bdf, tmp->supp_xcp_mode, tmp->xcp_mode, tmp->mem_mode,
 		tmp->tmr_base, tmp->tmr_size);
 	list_add_tail(&tmp->list, &amdgpu_acpi_dev_list);
 	*dev_info = tmp;
@@ -1034,7 +1023,7 @@ out:
 }
 
 static int amdgpu_acpi_get_xcc_info(struct amdgpu_acpi_xcc_info *xcc_info,
-				    u32 *sbdf)
+				    u16 *bdf)
 {
 	union acpi_object *obj;
 	acpi_status status;
@@ -1065,10 +1054,8 @@ static int amdgpu_acpi_get_xcc_info(struct amdgpu_acpi_xcc_info *xcc_info,
 	xcc_info->phy_id = (obj->integer.value >> 32) & 0xFF;
 	/* xcp node of this xcc [47:40] */
 	xcc_info->xcp_node = (obj->integer.value >> 40) & 0xFF;
-	/* PF domain of this xcc [31:16] */
-	*sbdf = (obj->integer.value) & 0xFFFF0000;
 	/* PF bus/dev/fn of this xcc [63:48] */
-	*sbdf |= (obj->integer.value >> 48) & 0xFFFF;
+	*bdf = (obj->integer.value >> 48) & 0xFFFF;
 	ACPI_FREE(obj);
 	obj = NULL;
 
@@ -1092,7 +1079,7 @@ static int amdgpu_acpi_enumerate_xcc(void)
 	struct acpi_device *acpi_dev;
 	char hid[ACPI_ID_LEN];
 	int ret, id;
-	u32 sbdf;
+	u16 bdf;
 
 	INIT_LIST_HEAD(&amdgpu_acpi_dev_list);
 	xa_init(&numa_info_xa);
@@ -1120,16 +1107,16 @@ static int amdgpu_acpi_enumerate_xcc(void)
 		xcc_info->handle = acpi_device_handle(acpi_dev);
 		acpi_dev_put(acpi_dev);
 
-		ret = amdgpu_acpi_get_xcc_info(xcc_info, &sbdf);
+		ret = amdgpu_acpi_get_xcc_info(xcc_info, &bdf);
 		if (ret) {
 			kfree(xcc_info);
 			continue;
 		}
 
-		dev_info = amdgpu_acpi_get_dev(sbdf);
+		dev_info = amdgpu_acpi_get_dev(bdf);
 
 		if (!dev_info)
-			ret = amdgpu_acpi_dev_init(&dev_info, xcc_info, sbdf);
+			ret = amdgpu_acpi_dev_init(&dev_info, xcc_info, bdf);
 
 		if (ret == -ENOMEM)
 			return ret;
@@ -1149,14 +1136,13 @@ int amdgpu_acpi_get_tmr_info(struct amdgpu_device *adev, u64 *tmr_offset,
 			     u64 *tmr_size)
 {
 	struct amdgpu_acpi_dev_info *dev_info;
-	u32 sbdf;
+	u16 bdf;
 
 	if (!tmr_offset || !tmr_size)
 		return -EINVAL;
 
-	sbdf = (pci_domain_nr(adev->pdev->bus) << 16);
-	sbdf |= pci_dev_id(adev->pdev);
-	dev_info = amdgpu_acpi_get_dev(sbdf);
+	bdf = pci_dev_id(adev->pdev);
+	dev_info = amdgpu_acpi_get_dev(bdf);
 	if (!dev_info)
 		return -ENOENT;
 
@@ -1171,14 +1157,13 @@ int amdgpu_acpi_get_mem_info(struct amdgpu_device *adev, int xcc_id,
 {
 	struct amdgpu_acpi_dev_info *dev_info;
 	struct amdgpu_acpi_xcc_info *xcc_info;
-	u32 sbdf;
+	u16 bdf;
 
 	if (!numa_info)
 		return -EINVAL;
 
-	sbdf = (pci_domain_nr(adev->pdev->bus) << 16);
-	sbdf |= pci_dev_id(adev->pdev);
-	dev_info = amdgpu_acpi_get_dev(sbdf);
+	bdf = pci_dev_id(adev->pdev);
+	dev_info = amdgpu_acpi_get_dev(bdf);
 	if (!dev_info)
 		return -ENOENT;
 
@@ -1279,8 +1264,6 @@ void amdgpu_acpi_get_backlight_caps(struct amdgpu_dm_backlight_caps *caps)
 	caps->caps_valid = atif->backlight_caps.caps_valid;
 	caps->min_input_signal = atif->backlight_caps.min_input_signal;
 	caps->max_input_signal = atif->backlight_caps.max_input_signal;
-	caps->ac_level = atif->backlight_caps.ac_level;
-	caps->dc_level = atif->backlight_caps.dc_level;
 }
 
 /**
@@ -1406,11 +1389,14 @@ void amdgpu_acpi_detect(void)
 	struct pci_dev *pdev = NULL;
 	int ret;
 
-	while ((pdev = pci_get_base_class(PCI_BASE_CLASS_DISPLAY, pdev))) {
-		if ((pdev->class != PCI_CLASS_DISPLAY_VGA << 8) &&
-		    (pdev->class != PCI_CLASS_DISPLAY_OTHER << 8))
-			continue;
+	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev)) != NULL) {
+		if (!atif->handle)
+			amdgpu_atif_pci_probe_handle(pdev);
+		if (!atcs->handle)
+			amdgpu_atcs_pci_probe_handle(pdev);
+	}
 
+	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_OTHER << 8, pdev)) != NULL) {
 		if (!atif->handle)
 			amdgpu_atif_pci_probe_handle(pdev);
 		if (!atcs->handle)
@@ -1507,9 +1493,6 @@ bool amdgpu_acpi_is_s0ix_active(struct amdgpu_device *adev)
 	if (adev->asic_type < CHIP_RAVEN)
 		return false;
 
-	if (!(adev->pm.pp_feature & PP_GFXOFF_MASK))
-		return false;
-
 	/*
 	 * If ACPI_FADT_LOW_POWER_S0 is not set in the FADT, it is generally
 	 * risky to do any special firmware-related preparations for entering
@@ -1530,24 +1513,6 @@ bool amdgpu_acpi_is_s0ix_active(struct amdgpu_device *adev)
 #else
 	return true;
 #endif /* CONFIG_AMD_PMC */
-}
-
-/**
- * amdgpu_choose_low_power_state
- *
- * @adev: amdgpu_device_pointer
- *
- * Choose the target low power state for the GPU
- */
-void amdgpu_choose_low_power_state(struct amdgpu_device *adev)
-{
-	if (adev->in_runpm)
-		return;
-
-	if (amdgpu_acpi_is_s0ix_active(adev))
-		adev->in_s0ix = true;
-	else if (amdgpu_acpi_is_s3_active(adev))
-		adev->in_s3 = true;
 }
 
 #endif /* CONFIG_SUSPEND */

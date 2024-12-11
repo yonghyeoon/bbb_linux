@@ -53,7 +53,7 @@ static void hypfs_update_update(struct super_block *sb)
 	struct inode *inode = d_inode(sb_info->update_file);
 
 	sb_info->last_update = ktime_get_seconds();
-	simple_inode_init_ts(inode);
+	inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
 }
 
 /* directory tree removal functions */
@@ -101,7 +101,7 @@ static struct inode *hypfs_make_inode(struct super_block *sb, umode_t mode)
 		ret->i_mode = mode;
 		ret->i_uid = hypfs_info->uid;
 		ret->i_gid = hypfs_info->gid;
-		simple_inode_init_ts(ret);
+		ret->i_atime = ret->i_mtime = inode_set_ctime_current(ret);
 		if (S_ISDIR(mode))
 			set_nlink(ret, 2);
 	}
@@ -443,6 +443,7 @@ static const struct file_operations hypfs_file_ops = {
 	.release	= hypfs_release,
 	.read_iter	= hypfs_read_iter,
 	.write_iter	= hypfs_write_iter,
+	.llseek		= no_llseek,
 };
 
 static struct file_system_type hypfs_type = {

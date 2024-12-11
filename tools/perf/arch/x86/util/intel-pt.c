@@ -32,7 +32,6 @@
 #include "../../../util/tsc.h"
 #include <internal/lib.h> // page_size
 #include "../../../util/intel-pt.h"
-#include <api/fs/fs.h>
 
 #define KiB(x) ((x) * 1024)
 #define MiB(x) ((x) * 1024 * 1024)
@@ -61,31 +60,36 @@ struct intel_pt_recording {
 	size_t				priv_size;
 };
 
-static int intel_pt_parse_terms_with_default(const struct perf_pmu *pmu,
+static int intel_pt_parse_terms_with_default(struct perf_pmu *pmu,
 					     const char *str,
 					     u64 *config)
 {
-	struct parse_events_terms terms;
+	struct list_head *terms;
 	struct perf_event_attr attr = { .size = 0, };
 	int err;
 
-	parse_events_terms__init(&terms);
-	err = parse_events_terms(&terms, str, /*input=*/ NULL);
+	terms = malloc(sizeof(struct list_head));
+	if (!terms)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(terms);
+
+	err = parse_events_terms(terms, str, /*input=*/ NULL);
 	if (err)
 		goto out_free;
 
 	attr.config = *config;
-	err = perf_pmu__config_terms(pmu, &attr, &terms, /*zero=*/true, /*err=*/NULL);
+	err = perf_pmu__config_terms(pmu, &attr, terms, /*zero=*/true, /*err=*/NULL);
 	if (err)
 		goto out_free;
 
 	*config = attr.config;
 out_free:
-	parse_events_terms__exit(&terms);
+	parse_events_terms__delete(terms);
 	return err;
 }
 
-static int intel_pt_parse_terms(const struct perf_pmu *pmu, const char *str, u64 *config)
+static int intel_pt_parse_terms(struct perf_pmu *pmu, const char *str, u64 *config)
 {
 	*config = 0;
 	return intel_pt_parse_terms_with_default(pmu, str, config);
@@ -178,7 +182,7 @@ static int intel_pt_pick_bit(int bits, int target)
 	return pick;
 }
 
-static u64 intel_pt_default_config(const struct perf_pmu *intel_pt_pmu)
+static u64 intel_pt_default_config(struct perf_pmu *intel_pt_pmu)
 {
 	char buf[256];
 	int mtc, mtc_periods = 0, mtc_period;
@@ -257,17 +261,20 @@ static int intel_pt_parse_snapshot_options(struct auxtrace_record *itr,
 	return 0;
 }
 
-void intel_pt_pmu_default_config(const struct perf_pmu *intel_pt_pmu,
-				 struct perf_event_attr *attr)
+struct perf_event_attr *
+intel_pt_pmu_default_config(struct perf_pmu *intel_pt_pmu)
 {
-	static u64 config;
-	static bool initialized;
+	struct perf_event_attr *attr;
 
-	if (!initialized) {
-		config = intel_pt_default_config(intel_pt_pmu);
-		initialized = true;
-	}
-	attr->config = config;
+	attr = zalloc(sizeof(struct perf_event_attr));
+	if (!attr)
+		return NULL;
+
+	attr->config = intel_pt_default_config(intel_pt_pmu);
+
+	intel_pt_pmu->selectable = true;
+
+	return attr;
 }
 
 static const char *intel_pt_find_filter(struct evlist *evlist,
@@ -370,7 +377,7 @@ static int intel_pt_info_fill(struct auxtrace_record *itr,
 			ui__warning("Intel Processor Trace: TSC not available\n");
 	}
 
-	per_cpu_mmaps = !perf_cpu_map__is_any_cpu_or_is_empty(session->evlist->core.user_requested_cpus);
+	per_cpu_mmaps = !perf_cpu_map__empty(session->evlist->core.user_requested_cpus);
 
 	auxtrace_info->type = PERF_AUXTRACE_INTEL_PT;
 	auxtrace_info->priv[INTEL_PT_PMU_TYPE] = intel_pt_pmu->type;
@@ -428,16 +435,6 @@ static int intel_pt_track_switches(struct evlist *evlist)
 	return 0;
 }
 #endif
-
-static bool intel_pt_exclude_guest(void)
-{
-	int pt_mode;
-
-	if (sysfs__read_int("module/kvm_intel/parameters/pt_mode", &pt_mode))
-		pt_mode = 0;
-
-	return pt_mode == 1;
-}
 
 static void intel_pt_valid_str(char *str, size_t len, u64 valid)
 {
@@ -631,7 +628,6 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 			}
 			evsel->core.attr.freq = 0;
 			evsel->core.attr.sample_period = 1;
-			evsel->core.attr.exclude_guest = intel_pt_exclude_guest();
 			evsel->no_aux_samples = true;
 			evsel->needs_auxtrace_mmap = true;
 			intel_pt_evsel = evsel;
@@ -770,8 +766,7 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 	}
 
 	if (!opts->auxtrace_snapshot_mode && !opts->auxtrace_sample_mode) {
-		size_t aw = opts->auxtrace_mmap_pages * (size_t)page_size / 4;
-		u32 aux_watermark = aw > UINT_MAX ? UINT_MAX : aw;
+		u32 aux_watermark = opts->auxtrace_mmap_pages * page_size / 4;
 
 		intel_pt_evsel->core.attr.aux_watermark = aux_watermark;
 	}
@@ -787,7 +782,7 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 	 * Per-cpu recording needs sched_switch events to distinguish different
 	 * threads.
 	 */
-	if (have_timing_info && !perf_cpu_map__is_any_cpu_or_is_empty(cpus) &&
+	if (have_timing_info && !perf_cpu_map__empty(cpus) &&
 	    !record_opts__no_switch_events(opts)) {
 		if (perf_can_record_switch_events()) {
 			bool cpu_wide = !target__none(&opts->target) &&
@@ -845,7 +840,7 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 		 * In the case of per-cpu mmaps, we need the CPU on the
 		 * AUX event.
 		 */
-		if (!perf_cpu_map__is_any_cpu_or_is_empty(cpus))
+		if (!perf_cpu_map__empty(cpus))
 			evsel__set_sample_bit(intel_pt_evsel, CPU);
 	}
 
@@ -871,7 +866,7 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 			tracking_evsel->immediate = true;
 
 		/* In per-cpu case, always need the time of mmap events etc */
-		if (!perf_cpu_map__is_any_cpu_or_is_empty(cpus)) {
+		if (!perf_cpu_map__empty(cpus)) {
 			evsel__set_sample_bit(tracking_evsel, TIME);
 			/* And the CPU for switch events */
 			evsel__set_sample_bit(tracking_evsel, CPU);
@@ -883,7 +878,7 @@ static int intel_pt_recording_options(struct auxtrace_record *itr,
 	 * Warn the user when we do not have enough information to decode i.e.
 	 * per-cpu with no sched_switch (except workload-only).
 	 */
-	if (!ptr->have_sched_switch && !perf_cpu_map__is_any_cpu_or_is_empty(cpus) &&
+	if (!ptr->have_sched_switch && !perf_cpu_map__empty(cpus) &&
 	    !target__none(&opts->target) &&
 	    !intel_pt_evsel->core.attr.exclude_user)
 		ui__warning("Intel Processor Trace decoding will not be possible except for kernel tracing!\n");
@@ -1197,6 +1192,7 @@ struct auxtrace_record *intel_pt_recording_init(int *err)
 	}
 
 	ptr->intel_pt_pmu = intel_pt_pmu;
+	ptr->itr.pmu = intel_pt_pmu;
 	ptr->itr.recording_options = intel_pt_recording_options;
 	ptr->itr.info_priv_size = intel_pt_info_priv_size;
 	ptr->itr.info_fill = intel_pt_info_fill;

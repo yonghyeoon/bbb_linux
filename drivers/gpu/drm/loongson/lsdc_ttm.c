@@ -54,6 +54,7 @@ static void lsdc_bo_set_placement(struct lsdc_bo *lbo, u32 domain)
 		pflags |= TTM_PL_FLAG_TOPDOWN;
 
 	lbo->placement.placement = lbo->placements;
+	lbo->placement.busy_placement = lbo->placements;
 
 	if (domain & LSDC_GEM_DOMAIN_VRAM) {
 		lbo->placements[c].mem_type = TTM_PL_VRAM;
@@ -76,6 +77,7 @@ static void lsdc_bo_set_placement(struct lsdc_bo *lbo, u32 domain)
 	}
 
 	lbo->placement.num_placement = c;
+	lbo->placement.num_busy_placement = c;
 
 	for (i = 0; i < c; ++i) {
 		lbo->placements[i].fpfn = 0;
@@ -341,12 +343,16 @@ void lsdc_bo_unpin(struct lsdc_bo *lbo)
 
 void lsdc_bo_ref(struct lsdc_bo *lbo)
 {
-	drm_gem_object_get(&lbo->tbo.base);
+	struct ttm_buffer_object *tbo = &lbo->tbo;
+
+	ttm_bo_get(tbo);
 }
 
 void lsdc_bo_unref(struct lsdc_bo *lbo)
 {
-	drm_gem_object_put(&lbo->tbo.base);
+	struct ttm_buffer_object *tbo = &lbo->tbo;
+
+	ttm_bo_put(tbo);
 }
 
 int lsdc_bo_kmap(struct lsdc_bo *lbo)

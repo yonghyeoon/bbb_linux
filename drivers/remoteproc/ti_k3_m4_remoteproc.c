@@ -6,7 +6,9 @@
  *	Hari Nagalla <hnagalla@ti.com>
  */
 
+#include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
@@ -20,8 +22,8 @@
 #include "remoteproc_internal.h"
 #include "ti_sci_proc.h"
 
-#define K3_M4_IRAM_DEV_ADDR 0x00000
-#define K3_M4_DRAM_DEV_ADDR 0x30000
+/* M4 TI-SCI Processor Status Flags */
+#define PROC_BOOT_STATUS_FLAG_M4_WFI                    0x00000002
 
 /**
  * struct k3_m4_rproc_mem - internal memory structure
@@ -48,13 +50,27 @@ struct k3_m4_rproc_mem_data {
 };
 
 /**
+ * struct k3_m4_rproc_dev_data - device data structure for a remote processor
+ * @mems: pointer to memory definitions for a remote processor
+ * @num_mems: number of memory regions in @mems
+ * @uses_lreset: flag to denote the need for local reset management
+ */
+struct k3_m4_rproc_dev_data {
+	const struct k3_m4_rproc_mem_data *mems;
+	u32 num_mems;
+	bool uses_lreset;
+};
+
+/**
  * struct k3_m4_rproc - k3 remote processor driver structure
  * @dev: cached device pointer
+ * @rproc: remoteproc device handle
  * @mem: internal memory regions data
  * @num_mems: number of internal memory regions
  * @rmem: reserved memory regions data
  * @num_rmems: number of reserved memory regions
  * @reset: reset control handle
+ * @data: pointer to device data
  * @tsp: TI-SCI processor control handle
  * @ti_sci: TI-SCI handle
  * @ti_sci_id: TI-SCI device identifier
@@ -63,17 +79,42 @@ struct k3_m4_rproc_mem_data {
  */
 struct k3_m4_rproc {
 	struct device *dev;
+	struct rproc *rproc;
 	struct k3_m4_rproc_mem *mem;
 	int num_mems;
 	struct k3_m4_rproc_mem *rmem;
 	int num_rmems;
 	struct reset_control *reset;
+	const struct k3_m4_rproc_dev_data *data;
 	struct ti_sci_proc *tsp;
 	const struct ti_sci_handle *ti_sci;
 	u32 ti_sci_id;
 	struct mbox_chan *mbox;
 	struct mbox_client client;
+	struct completion shut_comp;
 };
+
+/**
+ * is_core_in_wfi - local utility function to check core status
+ * @kproc: remote core pointer used for checking core status
+ *
+ * This utility function is invoked by the shutdown sequence to ensure
+ * the remote core is in wfi, before asserting a reset.
+ */
+
+static int is_core_in_wfi(struct k3_m4_rproc *core)
+{
+	int ret;
+	u64 boot_vec;
+	u32 cfg, ctrl, stat;
+
+	ret = ti_sci_proc_get_status(core->tsp, &boot_vec, &cfg, &ctrl, &stat);
+
+	if (ret < 0)
+		return 0;
+
+	return (stat & PROC_BOOT_STATUS_FLAG_M4_WFI);
+}
 
 /**
  * k3_m4_rproc_mbox_callback() - inbound mailbox message handler
@@ -91,8 +132,10 @@ struct k3_m4_rproc {
  */
 static void k3_m4_rproc_mbox_callback(struct mbox_client *client, void *data)
 {
-	struct device *dev = client->dev;
-	struct rproc *rproc = dev_get_drvdata(dev);
+	struct k3_m4_rproc *kproc = container_of(client, struct k3_m4_rproc,
+						  client);
+	struct device *dev = kproc->rproc->dev.parent;
+	const char *name = kproc->rproc->name;
 	u32 msg = (u32)(uintptr_t)(data);
 
 	dev_dbg(dev, "mbox msg: 0x%x\n", msg);
@@ -103,21 +146,25 @@ static void k3_m4_rproc_mbox_callback(struct mbox_client *client, void *data)
 		 * remoteproc detected an exception, but error recovery is not
 		 * supported. So, just log this for now
 		 */
-		dev_err(dev, "K3 rproc %s crashed\n", rproc->name);
+		dev_err(dev, "K3 rproc %s crashed\n", name);
 		break;
 	case RP_MBOX_ECHO_REPLY:
-		dev_info(dev, "received echo reply from %s\n", rproc->name);
+		dev_info(dev, "received echo reply from %s\n", name);
+		break;
+	case RP_MBOX_SHUTDOWN_ACK:
+		dev_dbg(dev, "received shutdown_ack from %s\n", name);
+		complete(&kproc->shut_comp);
 		break;
 	default:
 		/* silently handle all other valid messages */
 		if (msg >= RP_MBOX_READY && msg < RP_MBOX_END_MSG)
 			return;
-		if (msg > rproc->max_notifyid) {
+		if (msg > kproc->rproc->max_notifyid) {
 			dev_dbg(dev, "dropping unknown message 0x%x", msg);
 			return;
 		}
 		/* msg contains the index of the triggered vring */
-		if (rproc_vq_interrupt(rproc, msg) == IRQ_NONE)
+		if (rproc_vq_interrupt(kproc->rproc, msg) == IRQ_NONE)
 			dev_dbg(dev, "no message was found in vqid %d\n", msg);
 	}
 }
@@ -131,25 +178,91 @@ static void k3_m4_rproc_mbox_callback(struct mbox_client *client, void *data)
 static void k3_m4_rproc_kick(struct rproc *rproc, int vqid)
 {
 	struct k3_m4_rproc *kproc = rproc->priv;
-	struct device *dev = kproc->dev;
+	struct device *dev = rproc->dev.parent;
 	u32 msg = (u32)vqid;
 	int ret;
 
-	/*
-	 * Send the index of the triggered virtqueue in the mailbox payload.
-	 * NOTE: msg is cast to uintptr_t to prevent compiler warnings when
-	 * void* is 64bit. It is safely cast back to u32 in the mailbox driver.
-	 */
+	/* send the index of the triggered virtqueue in the mailbox payload */
 	ret = mbox_send_message(kproc->mbox, (void *)(uintptr_t)msg);
 	if (ret < 0)
 		dev_err(dev, "failed to send mailbox message, status = %d\n",
 			ret);
 }
 
-static int k3_m4_rproc_ping_mbox(struct k3_m4_rproc *kproc)
+/* Put the remote processor into reset */
+static int k3_m4_rproc_reset(struct k3_m4_rproc *kproc)
 {
 	struct device *dev = kproc->dev;
 	int ret;
+
+	ret = reset_control_assert(kproc->reset);
+	if (ret) {
+		dev_err(dev, "local-reset assert failed, ret = %d\n", ret);
+		return ret;
+	}
+
+	if (kproc->data->uses_lreset)
+		return ret;
+
+	ret = kproc->ti_sci->ops.dev_ops.put_device(kproc->ti_sci,
+						    kproc->ti_sci_id);
+	if (ret) {
+		dev_err(dev, "module-reset assert failed, ret = %d\n", ret);
+		if (reset_control_deassert(kproc->reset))
+			dev_warn(dev, "local-reset deassert back failed\n");
+	}
+
+	return ret;
+}
+
+/* Release the remote processor from reset */
+static int k3_m4_rproc_release(struct k3_m4_rproc *kproc)
+{
+	struct device *dev = kproc->dev;
+	int ret;
+
+	if (kproc->data->uses_lreset)
+		goto lreset;
+
+	ret = kproc->ti_sci->ops.dev_ops.get_device(kproc->ti_sci,
+						    kproc->ti_sci_id);
+	if (ret) {
+		dev_err(dev, "module-reset deassert failed, ret = %d\n", ret);
+		return ret;
+	}
+
+lreset:
+	ret = reset_control_deassert(kproc->reset);
+	if (ret) {
+		dev_err(dev, "local-reset deassert failed, ret = %d\n", ret);
+		if (kproc->ti_sci->ops.dev_ops.put_device(kproc->ti_sci,
+							  kproc->ti_sci_id))
+			dev_warn(dev, "module-reset assert back failed\n");
+	}
+
+	return ret;
+}
+
+static int k3_m4_rproc_request_mbox(struct rproc *rproc)
+{
+	struct k3_m4_rproc *kproc = rproc->priv;
+	struct mbox_client *client = &kproc->client;
+	struct device *dev = kproc->dev;
+	int ret;
+
+	client->dev = dev;
+	client->tx_done = NULL;
+	client->rx_callback = k3_m4_rproc_mbox_callback;
+	client->tx_block = false;
+	client->knows_txdone = false;
+
+	kproc->mbox = mbox_request_channel(client, 0);
+	if (IS_ERR(kproc->mbox)) {
+		ret = -EBUSY;
+		dev_err(dev, "mbox_request_channel failed: %ld\n",
+			PTR_ERR(kproc->mbox));
+		return ret;
+	}
 
 	/*
 	 * Ping the remote processor, this is only for sanity-sake for now;
@@ -161,6 +274,7 @@ static int k3_m4_rproc_ping_mbox(struct k3_m4_rproc *kproc)
 	ret = mbox_send_message(kproc->mbox, (void *)RP_MBOX_ECHO_REQUEST);
 	if (ret < 0) {
 		dev_err(dev, "mbox_send_message failed: %d\n", ret);
+		mbox_free_channel(kproc->mbox);
 		return ret;
 	}
 
@@ -174,7 +288,8 @@ static int k3_m4_rproc_ping_mbox(struct k3_m4_rproc *kproc)
  * used to release the global reset on remote cores to allow loading into the
  * internal RAMs. The .prepare() ops is invoked by remoteproc core before any
  * firmware loading, and is followed by the .start() ops after loading to
- * actually let the remote cores to run.
+ * actually let the remote cores to run. This callback is invoked only in
+ * remoteproc mode.
  */
 static int k3_m4_rproc_prepare(struct rproc *rproc)
 {
@@ -182,34 +297,13 @@ static int k3_m4_rproc_prepare(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret;
 
-	/* If the core is running already no need to deassert the module reset */
-	if (rproc->state == RPROC_DETACHED)
-		return 0;
-
-	/*
-	 * Ensure the local reset is asserted so the core doesn't
-	 * execute bogus code when the module reset is released.
-	 */
-	ret = reset_control_assert(kproc->reset);
-	if (ret) {
-		dev_err(dev, "could not assert local reset\n");
-		return ret;
-	}
-
-	ret = reset_control_status(kproc->reset);
-	if (ret <= 0) {
-		dev_err(dev, "local reset still not asserted\n");
-		return ret;
-	}
-
 	ret = kproc->ti_sci->ops.dev_ops.get_device(kproc->ti_sci,
 						    kproc->ti_sci_id);
-	if (ret) {
-		dev_err(dev, "could not deassert module-reset for internal RAM loading\n");
-		return ret;
-	}
+	if (ret)
+		dev_err(dev, "module-reset deassert failed, cannot enable internal RAM loading, ret = %d\n",
+			ret);
 
-	return 0;
+	return ret;
 }
 
 /*
@@ -219,7 +313,7 @@ static int k3_m4_rproc_prepare(struct rproc *rproc)
  * powering down the remote core. The cores themselves are only halted in the
  * .stop() callback through the local reset, and the .unprepare() ops is invoked
  * by the remoteproc core after the remoteproc is stopped to balance the global
- * reset.
+ * reset. This callback is invoked only in remoteproc mode.
  */
 static int k3_m4_rproc_unprepare(struct rproc *rproc)
 {
@@ -227,18 +321,12 @@ static int k3_m4_rproc_unprepare(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret;
 
-	/* If the core is going to be detached do not assert the module reset */
-	if (rproc->state == RPROC_ATTACHED)
-		return 0;
-
 	ret = kproc->ti_sci->ops.dev_ops.put_device(kproc->ti_sci,
 						    kproc->ti_sci_id);
-	if (ret) {
-		dev_err(dev, "module-reset assert failed\n");
-		return ret;
-	}
+	if (ret)
+		dev_err(dev, "module-reset assert failed, ret = %d\n", ret);
 
-	return 0;
+	return ret;
 }
 
 /*
@@ -332,14 +420,13 @@ static void *k3_m4_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len, bool 
 static int k3_m4_rproc_of_get_memories(struct platform_device *pdev,
 				       struct k3_m4_rproc *kproc)
 {
-	static const char * const mem_names[] = { "iram", "dram" };
-	static const u32 mem_addrs[] = { K3_M4_IRAM_DEV_ADDR, K3_M4_DRAM_DEV_ADDR };
+	const struct k3_m4_rproc_dev_data *data = kproc->data;
 	struct device *dev = &pdev->dev;
 	struct resource *res;
-	int num_mems;
+	int num_mems = 0;
 	int i;
 
-	num_mems = ARRAY_SIZE(mem_names);
+	num_mems = kproc->data->num_mems;
 	kproc->mem = devm_kcalloc(kproc->dev, num_mems,
 				  sizeof(*kproc->mem), GFP_KERNEL);
 	if (!kproc->mem)
@@ -347,17 +434,17 @@ static int k3_m4_rproc_of_get_memories(struct platform_device *pdev,
 
 	for (i = 0; i < num_mems; i++) {
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						   mem_names[i]);
+						   data->mems[i].name);
 		if (!res) {
 			dev_err(dev, "found no memory resource for %s\n",
-				mem_names[i]);
+				data->mems[i].name);
 			return -EINVAL;
 		}
 		if (!devm_request_mem_region(dev, res->start,
 					     resource_size(res),
 					     dev_name(dev))) {
 			dev_err(dev, "could not request %s region for resource\n",
-				mem_names[i]);
+				data->mems[i].name);
 			return -EBUSY;
 		}
 
@@ -365,15 +452,15 @@ static int k3_m4_rproc_of_get_memories(struct platform_device *pdev,
 							 resource_size(res));
 		if (!kproc->mem[i].cpu_addr) {
 			dev_err(dev, "failed to map %s memory\n",
-				mem_names[i]);
+				data->mems[i].name);
 			return -ENOMEM;
 		}
 		kproc->mem[i].bus_addr = res->start;
-		kproc->mem[i].dev_addr = mem_addrs[i];
+		kproc->mem[i].dev_addr = data->mems[i].dev_addr;
 		kproc->mem[i].size = resource_size(res);
 
 		dev_dbg(dev, "memory %8s: bus addr %pa size 0x%zx va %pK da 0x%x\n",
-			mem_names[i], &kproc->mem[i].bus_addr,
+			data->mems[i].name, &kproc->mem[i].bus_addr,
 			kproc->mem[i].size, kproc->mem[i].cpu_addr,
 			kproc->mem[i].dev_addr);
 	}
@@ -401,8 +488,8 @@ static int k3_m4_reserved_mem_init(struct k3_m4_rproc *kproc)
 	num_rmems = of_property_count_elems_of_size(np, "memory-region",
 						    sizeof(phandle));
 	if (num_rmems < 0) {
-		dev_err(dev, "device does not reserved memory regions (%d)\n",
-			num_rmems);
+		dev_err(dev, "device does not reserved memory regions (%pe)\n",
+			ERR_PTR(num_rmems));
 		return -EINVAL;
 	}
 	if (num_rmems < 2) {
@@ -414,7 +501,8 @@ static int k3_m4_reserved_mem_init(struct k3_m4_rproc *kproc)
 	/* use reserved memory region 0 for vring DMA allocations */
 	ret = of_reserved_mem_device_init_by_idx(dev, np, 0);
 	if (ret) {
-		dev_err(dev, "device cannot initialize DMA pool (%d)\n", ret);
+		dev_err(dev, "device cannot initialize DMA pool (%pe)\n",
+			ERR_PTR(ret));
 		return ret;
 	}
 	ret = devm_add_action_or_reset(dev, k3_m4_rproc_dev_mem_release, dev);
@@ -460,6 +548,31 @@ static int k3_m4_reserved_mem_init(struct k3_m4_rproc *kproc)
 	return 0;
 }
 
+static struct ti_sci_proc *k3_m4_rproc_of_get_tsp(struct device *dev,
+						  const struct ti_sci_handle *sci)
+{
+	struct ti_sci_proc *tsp;
+	u32 temp[2];
+	int ret;
+
+	ret = of_property_read_u32_array(dev->of_node, "ti,sci-proc-ids",
+					 temp, 2);
+	if (ret < 0)
+		return ERR_PTR(ret);
+
+	tsp = devm_kzalloc(dev, sizeof(*tsp), GFP_KERNEL);
+	if (!tsp)
+		return ERR_PTR(-ENOMEM);
+
+	tsp->dev = dev;
+	tsp->sci = sci;
+	tsp->ops = &sci->ops.proc_ops;
+	tsp->proc_id = temp[0];
+	tsp->host_id = temp[1];
+
+	return tsp;
+}
+
 static void k3_m4_release_tsp(void *data)
 {
 	struct ti_sci_proc *tsp = data;
@@ -468,7 +581,7 @@ static void k3_m4_release_tsp(void *data)
 }
 
 /*
- * Power up the M4 remote processor.
+ * Power up the M4F remote processor.
  *
  * This function will be invoked only after the firmware for this rproc
  * was loaded, parsed successfully, and all of its resource requirements
@@ -477,20 +590,21 @@ static void k3_m4_release_tsp(void *data)
 static int k3_m4_rproc_start(struct rproc *rproc)
 {
 	struct k3_m4_rproc *kproc = rproc->priv;
-	struct device *dev = kproc->dev;
 	int ret;
 
-	ret = k3_m4_rproc_ping_mbox(kproc);
+	ret = k3_m4_rproc_request_mbox(rproc);
 	if (ret)
 		return ret;
 
-	ret = reset_control_deassert(kproc->reset);
-	if (ret) {
-		dev_err(dev, "local-reset deassert failed, ret = %d\n", ret);
-		return ret;
-	}
+	ret = k3_m4_rproc_release(kproc);
+	if (ret)
+		goto put_mbox;
 
 	return 0;
+
+put_mbox:
+	mbox_free_channel(kproc->mbox);
+	return ret;
 }
 
 /*
@@ -501,15 +615,32 @@ static int k3_m4_rproc_start(struct rproc *rproc)
  */
 static int k3_m4_rproc_stop(struct rproc *rproc)
 {
+	unsigned long to = msecs_to_jiffies(3000);
 	struct k3_m4_rproc *kproc = rproc->priv;
+	u32 msg = (u32)(uintptr_t) RP_MBOX_SHUTDOWN;
 	struct device *dev = kproc->dev;
 	int ret;
+	u32 stat = 0;
 
-	ret = reset_control_assert(kproc->reset);
-	if (ret) {
-		dev_err(dev, "local-reset assert failed, ret = %d\n", ret);
+	reinit_completion(&kproc->shut_comp);
+	ret = mbox_send_message(kproc->mbox, (void *) (uintptr_t)msg);
+	if (ret < 0) {
+		dev_err(dev, "PM mbox_send_message failed: %d\n", ret);
 		return ret;
 	}
+
+	ret = wait_for_completion_timeout(&kproc->shut_comp, to);
+	if (ret == 0) {
+		dev_err(dev, "%s: timedout waiting for rproc completion event\n", __func__);
+	};
+
+	mbox_free_channel(kproc->mbox);
+
+	ret = readx_poll_timeout(is_core_in_wfi, kproc, stat, stat, 200, 2000);
+	if (ret)
+		return ret;
+
+	k3_m4_rproc_reset(kproc);
 
 	return 0;
 }
@@ -517,55 +648,67 @@ static int k3_m4_rproc_stop(struct rproc *rproc)
 /*
  * Attach to a running M4 remote processor (IPC-only mode)
  *
- * The remote processor is already booted, so there is no need to issue any
- * TI-SCI commands to boot the M4 core. This callback is used only in IPC-only
- * mode.
+ * This rproc attach callback only needs to request the mailbox, the remote
+ * processor is already booted, so there is no need to issue any TI-SCI
+ * commands to boot the M4 core. This callback is used only in IPC-only mode.
  */
 static int k3_m4_rproc_attach(struct rproc *rproc)
 {
 	struct k3_m4_rproc *kproc = rproc->priv;
+	struct device *dev = kproc->dev;
 	int ret;
 
-	ret = k3_m4_rproc_ping_mbox(kproc);
+	ret = k3_m4_rproc_request_mbox(rproc);
 	if (ret)
 		return ret;
 
+	dev_info(dev, "M4 initialized in IPC-only mode\n");
 	return 0;
 }
 
 /*
  * Detach from a running M4 remote processor (IPC-only mode)
  *
- * This rproc detach callback performs the opposite operation to attach
- * callback, the M4 core is not stopped and will be left to continue to
- * run its booted firmware. This callback is invoked only in IPC-only mode.
+ * This rproc detach callback performs the opposite operation to attach callback
+ * and only needs to release the mailbox, the M4 core is not stopped and will
+ * be left to continue to run its booted firmware. This callback is invoked only in
+ * IPC-only mode.
  */
 static int k3_m4_rproc_detach(struct rproc *rproc)
 {
+	struct k3_m4_rproc *kproc = rproc->priv;
+	struct device *dev = kproc->dev;
+
+	mbox_free_channel(kproc->mbox);
+	dev_info(dev, "M4 deinitialized in IPC-only mode\n");
 	return 0;
 }
 
 static const struct rproc_ops k3_m4_rproc_ops = {
-	.prepare = k3_m4_rproc_prepare,
-	.unprepare = k3_m4_rproc_unprepare,
-	.start = k3_m4_rproc_start,
-	.stop = k3_m4_rproc_stop,
-	.attach = k3_m4_rproc_attach,
-	.detach = k3_m4_rproc_detach,
-	.kick = k3_m4_rproc_kick,
-	.da_to_va = k3_m4_rproc_da_to_va,
+	.start		= k3_m4_rproc_start,
+	.stop		= k3_m4_rproc_stop,
+	.attach		= k3_m4_rproc_attach,
+	.detach		= k3_m4_rproc_detach,
+	.kick		= k3_m4_rproc_kick,
+	.da_to_va	= k3_m4_rproc_da_to_va,
 	.get_loaded_rsc_table = k3_m4_get_loaded_rsc_table,
 };
 
 static int k3_m4_rproc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
+	const struct k3_m4_rproc_dev_data *data;
 	struct k3_m4_rproc *kproc;
 	struct rproc *rproc;
 	const char *fw_name;
 	bool r_state = false;
 	bool p_state = false;
-	int ret;
+	int ret = 0;
+
+	data = device_get_match_data(dev);
+	if (!data)
+		return -ENODEV;
 
 	ret = rproc_of_parse_firmware(dev, 0, &fw_name);
 	if (ret)
@@ -578,16 +721,21 @@ static int k3_m4_rproc_probe(struct platform_device *pdev)
 
 	rproc->has_iommu = false;
 	rproc->recovery_disabled = true;
+	if (data->uses_lreset) {
+		rproc->ops->prepare = k3_m4_rproc_prepare;
+		rproc->ops->unprepare = k3_m4_rproc_unprepare;
+	}
 	kproc = rproc->priv;
+	kproc->rproc = rproc;
 	kproc->dev = dev;
-	platform_set_drvdata(pdev, rproc);
+	kproc->data = data;
 
 	kproc->ti_sci = devm_ti_sci_get_by_phandle(dev, "ti,sci");
 	if (IS_ERR(kproc->ti_sci))
 		return dev_err_probe(dev, PTR_ERR(kproc->ti_sci),
 				     "failed to get ti-sci handle\n");
 
-	ret = of_property_read_u32(dev->of_node, "ti,sci-dev-id", &kproc->ti_sci_id);
+	ret = of_property_read_u32(np, "ti,sci-dev-id", &kproc->ti_sci_id);
 	if (ret)
 		return dev_err_probe(dev, ret, "missing 'ti,sci-dev-id' property\n");
 
@@ -595,10 +743,11 @@ static int k3_m4_rproc_probe(struct platform_device *pdev)
 	if (IS_ERR(kproc->reset))
 		return dev_err_probe(dev, PTR_ERR(kproc->reset), "failed to get reset\n");
 
-	kproc->tsp = ti_sci_proc_of_get_tsp(dev, kproc->ti_sci);
+	kproc->tsp = k3_m4_rproc_of_get_tsp(dev, kproc->ti_sci);
 	if (IS_ERR(kproc->tsp))
 		return dev_err_probe(dev, PTR_ERR(kproc->tsp),
 				     "failed to construct ti-sci proc control\n");
+	init_completion(&kproc->shut_comp);
 
 	ret = ti_sci_proc_request(kproc->tsp);
 	if (ret < 0)
@@ -623,32 +772,55 @@ static int k3_m4_rproc_probe(struct platform_device *pdev)
 
 	/* configure devices for either remoteproc or IPC-only mode */
 	if (p_state) {
+		dev_info(dev, "configured M4 for IPC-only mode\n");
 		rproc->state = RPROC_DETACHED;
-		dev_info(dev, "configured M4F for IPC-only mode\n");
+		/* override rproc ops with only required IPC-only mode ops */
+		rproc->ops->prepare = NULL;
+		rproc->ops->unprepare = NULL;
+		rproc->ops->start = NULL;
+		rproc->ops->stop = NULL;
+		rproc->ops->attach = k3_m4_rproc_attach;
+		rproc->ops->detach = k3_m4_rproc_detach;
+		rproc->ops->get_loaded_rsc_table = k3_m4_get_loaded_rsc_table;
 	} else {
-		dev_info(dev, "configured M4F for remoteproc mode\n");
+		dev_info(dev, "configured M4 for remoteproc mode\n");
+		/*
+		 * ensure the M4 local reset is asserted to ensure the core
+		 * doesn't execute bogus code in .prepare() when the module
+		 * reset is released.
+		 */
+		if (data->uses_lreset) {
+			ret = reset_control_status(kproc->reset);
+			if (ret < 0) {
+				return dev_err_probe(dev, ret, "failed to get reset status\n");
+			} else if (ret == 0) {
+				dev_warn(dev, "local reset is deasserted for device\n");
+				k3_m4_rproc_reset(kproc);
+			}
+		}
 	}
-
-	kproc->client.dev = dev;
-	kproc->client.tx_done = NULL;
-	kproc->client.rx_callback = k3_m4_rproc_mbox_callback;
-	kproc->client.tx_block = false;
-	kproc->client.knows_txdone = false;
-	kproc->mbox = mbox_request_channel(&kproc->client, 0);
-	if (IS_ERR(kproc->mbox))
-		return dev_err_probe(dev, PTR_ERR(kproc->mbox),
-				     "mbox_request_channel failed\n");
 
 	ret = devm_rproc_add(dev, rproc);
 	if (ret)
 		return dev_err_probe(dev, ret,
-				     "failed to register device with remoteproc core\n");
+				     "failed to add register device with remoteproc core\n");
 
 	return 0;
 }
 
+static const struct k3_m4_rproc_mem_data am64_m4_mems[] = {
+	{ .name = "iram", .dev_addr = 0x0 },
+	{ .name = "dram", .dev_addr = 0x30000 },
+};
+
+static const struct k3_m4_rproc_dev_data am64_m4_data = {
+	.mems = am64_m4_mems,
+	.num_mems = ARRAY_SIZE(am64_m4_mems),
+	.uses_lreset = true,
+};
+
 static const struct of_device_id k3_m4_of_match[] = {
-	{ .compatible = "ti,am64-m4fss", },
+	{ .compatible = "ti,am64-m4fss", .data = &am64_m4_data, },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, k3_m4_of_match);

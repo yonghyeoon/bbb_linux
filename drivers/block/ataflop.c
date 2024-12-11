@@ -1760,10 +1760,8 @@ static int fd_locked_ioctl(struct block_device *bdev, blk_mode_t mode,
 		/* invalidate the buffer track to force a reread */
 		BufferDrive = -1;
 		set_bit(drive, &fake_change);
-		if (disk_check_media_change(disk)) {
-			bdev_mark_dead(disk->part0, true);
+		if (disk_check_media_change(disk))
 			floppy_revalidate(disk);
-		}
 		return 0;
 	default:
 		return -EINVAL;
@@ -1992,12 +1990,9 @@ static const struct blk_mq_ops ataflop_mq_ops = {
 
 static int ataflop_alloc_disk(unsigned int drive, unsigned int type)
 {
-	struct queue_limits lim = {
-		.features		= BLK_FEAT_ROTATIONAL,
-	};
 	struct gendisk *disk;
 
-	disk = blk_mq_alloc_disk(&unit[drive].tag_set, &lim, NULL);
+	disk = blk_mq_alloc_disk(&unit[drive].tag_set, NULL);
 	if (IS_ERR(disk))
 		return PTR_ERR(disk);
 
@@ -2200,5 +2195,4 @@ static void __exit atari_floppy_exit(void)
 module_init(atari_floppy_init)
 module_exit(atari_floppy_exit)
 
-MODULE_DESCRIPTION("Atari floppy driver");
 MODULE_LICENSE("GPL");

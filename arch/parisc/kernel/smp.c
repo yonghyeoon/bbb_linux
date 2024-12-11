@@ -297,7 +297,7 @@ smp_cpu_init(int cpunum)
 	enter_lazy_tlb(&init_mm, current);
 
 	init_IRQ();   /* make sure no IRQs are enabled or pending */
-	parisc_clockevent_init();
+	start_cpu_itimer();
 }
 
 
@@ -344,7 +344,7 @@ static int smp_boot_one_cpu(int cpuid, struct task_struct *idle)
 		struct irq_desc *desc = irq_to_desc(i);
 
 		if (desc && desc->kstat_irqs)
-			*per_cpu_ptr(desc->kstat_irqs, cpuid) = (struct irqstat) { };
+			*per_cpu_ptr(desc->kstat_irqs, cpuid) = 0;
 	}
 #endif
 
@@ -404,7 +404,13 @@ alive:
 
 void __init smp_prepare_boot_cpu(void)
 {
-	pr_info("SMP: bootstrap CPU ID is 0\n");
+	int bootstrap_processor = per_cpu(cpu_data, 0).cpuid;
+
+	/* Setup BSP mappings */
+	printk(KERN_INFO "SMP: bootstrap CPU ID is %d\n", bootstrap_processor);
+
+	set_cpu_online(bootstrap_processor, true);
+	set_cpu_present(bootstrap_processor, true);
 }
 
 

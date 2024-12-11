@@ -19,6 +19,7 @@ allOf:
 properties:
   compatible:
     enum:
+      - ti,ds90ub954-q1
       - ti,ds90ub960-q1
       - ti,ds90ub9702-q1
 
@@ -69,7 +70,6 @@ properties:
             maxItems: 1
 
           i2c-alias:
-            $ref: /schemas/types.yaml#/definitions/uint32
             description:
               The I2C address used for the serializer. Transactions to this
               address on the I2C bus where the deserializer resides are

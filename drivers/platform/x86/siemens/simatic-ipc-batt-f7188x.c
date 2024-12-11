@@ -45,9 +45,9 @@ static struct gpiod_lookup_table simatic_ipc_batt_gpio_table_bx_59a = {
 	}
 };
 
-static void simatic_ipc_batt_f7188x_remove(struct platform_device *pdev)
+static int simatic_ipc_batt_f7188x_remove(struct platform_device *pdev)
 {
-	simatic_ipc_batt_remove(pdev, batt_lookup_table);
+	return simatic_ipc_batt_remove(pdev, batt_lookup_table);
 }
 
 static int simatic_ipc_batt_f7188x_probe(struct platform_device *pdev)
@@ -73,7 +73,7 @@ static int simatic_ipc_batt_f7188x_probe(struct platform_device *pdev)
 
 static struct platform_driver simatic_ipc_batt_driver = {
 	.probe = simatic_ipc_batt_f7188x_probe,
-	.remove_new = simatic_ipc_batt_f7188x_remove,
+	.remove = simatic_ipc_batt_f7188x_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
 	},
@@ -81,7 +81,6 @@ static struct platform_driver simatic_ipc_batt_driver = {
 
 module_platform_driver(simatic_ipc_batt_driver);
 
-MODULE_DESCRIPTION("CMOS Battery monitoring for Simatic IPCs based on Nuvoton GPIO");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" KBUILD_MODNAME);
 MODULE_SOFTDEP("pre: simatic-ipc-batt gpio_f7188x platform:elkhartlake-pinctrl platform:alderlake-pinctrl");

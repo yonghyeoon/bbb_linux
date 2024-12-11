@@ -454,6 +454,8 @@ int mwifiex_bypass_txlist_empty(struct mwifiex_adapter *adapter)
 
 	for (i = 0; i < adapter->priv_num; i++) {
 		priv = adapter->priv[i];
+		if (!priv)
+			continue;
 		if (adapter->if_ops.is_port_ready &&
 		    !adapter->if_ops.is_port_ready(priv))
 			continue;
@@ -475,6 +477,8 @@ mwifiex_wmm_lists_empty(struct mwifiex_adapter *adapter)
 
 	for (i = 0; i < adapter->priv_num; ++i) {
 		priv = adapter->priv[i];
+		if (!priv)
+			continue;
 		if (!priv->port_open &&
 		    (priv->bss_mode != NL80211_IFTYPE_ADHOC))
 			continue;
@@ -867,7 +871,7 @@ mwifiex_wmm_add_buf_txqueue(struct mwifiex_private *priv,
 		}
 	} else {
 		memcpy(ra, skb->data, ETH_ALEN);
-		if (is_multicast_ether_addr(ra) || mwifiex_is_skb_mgmt_frame(skb))
+		if (ra[0] & 0x01 || mwifiex_is_skb_mgmt_frame(skb))
 			eth_broadcast_addr(ra);
 		ra_list = mwifiex_wmm_get_queue_raptr(priv, tid_down, ra);
 	}
@@ -1486,6 +1490,9 @@ void mwifiex_process_bypass_tx(struct mwifiex_adapter *adapter)
 
 	for (i = 0; i < adapter->priv_num; ++i) {
 		priv = adapter->priv[i];
+
+		if (!priv)
+			continue;
 
 		if (adapter->if_ops.is_port_ready &&
 		    !adapter->if_ops.is_port_ready(priv))

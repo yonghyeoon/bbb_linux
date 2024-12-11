@@ -10,6 +10,9 @@
  *  Copyright (C) 2001 Greg Banks <gnb@alphalink.com.au>
  *  Copyright (C) 2001 Jan-Benedict Glaw <jbglaw@lug-owl.de>
  *  Copyright (C) 2003 Geert Uytterhoeven <geert@linux-m68k.org>
+ *
+ *  Serial_console ascii image can be any size,
+ *  but should contain %s to display the version
  */
 
 #include <linux/init.h>
@@ -42,6 +45,7 @@ extern const struct linux_logo logo_superh_mono;
 extern const struct linux_logo logo_superh_vga16;
 extern const struct linux_logo logo_superh_clut224;
 extern const struct linux_logo logo_spe_clut224;
+extern const struct linux_logo logo_beagle_clut224;
 
 extern const struct linux_logo *fb_find_logo(int depth);
 #ifdef CONFIG_FB_LOGO_EXTRA
